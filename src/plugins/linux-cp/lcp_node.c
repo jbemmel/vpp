@@ -779,15 +779,49 @@ format_lcp_arp_trace (u8 *s, va_list *args)
   return s;
 }
 
+/*
+ * Copy an ARP packet received on the PHY to the paired host TAP so Linux
+ * can build its neighbor table. Docs require this for every ARP opcode;
+ * requests were previously dropped from this path, leaving host ARP
+ * INCOMPLETE while VPP answered on the wire.
+ */
+static_always_inline void
+lcp_arp_copy_to_host (vlib_main_t *vm, vlib_buffer_t *b, u32 *copies,
+		      u32 *n_copies)
+{
+  lcp_itf_pair_t *lip;
+  vlib_buffer_t *c;
+  u32 lipi;
+  u8 len;
+
+  lipi = lcp_itf_pair_find_by_phy (vnet_buffer (b)->sw_if_index[VLIB_RX]);
+  lip = lcp_itf_pair_get (lipi);
+  if (PREDICT_FALSE (!lip))
+    return;
+
+  /* rewind to ethernet header, copy, restore current */
+  len = (u8 *) vlib_buffer_get_current (b) -
+	(u8 *) ethernet_buffer_get_header (b);
+  vlib_buffer_advance (b, -len);
+  c = vlib_buffer_copy (vm, b);
+  vlib_buffer_advance (b, len);
+
+  if (c)
+    {
+      vnet_buffer (c)->sw_if_index[VLIB_TX] = lip->lip_host_sw_if_index;
+      copies[(*n_copies)++] = vlib_get_buffer_index (vm, c);
+    }
+}
+
 /**
- * punt ARP replies to the host
+ * punt ARP packets from the PHY to the host TAP
  */
 VLIB_NODE_FN (lcp_arp_phy_node)
 (vlib_main_t *vm, vlib_node_runtime_t *node, vlib_frame_t *frame)
 {
   u32 n_left_from, *from, *to_next, n_left_to_next;
   lcp_arp_next_t next_index;
-  u32 reply_copies[VLIB_FRAME_SIZE];
+  u32 host_copies[VLIB_FRAME_SIZE];
   u32 n_copies = 0;
 
   next_index = node->cached_next_index;
@@ -823,84 +857,20 @@ VLIB_NODE_FN (lcp_arp_phy_node)
 	  vnet_feature_next (&next0, b0);
 	  vnet_feature_next (&next1, b1);
 
-	  /*
-	   * Replies might need to be received by the host, so we
-	   * make a copy of them.
-	   */
-	  if (arp0->opcode == clib_host_to_net_u16 (ETHERNET_ARP_OPCODE_reply))
-	    {
-	      lcp_itf_pair_t *lip0 = 0;
-	      u32 lipi0;
-	      vlib_buffer_t *c0;
-	      u8 len0;
-
-	      lipi0 = lcp_itf_pair_find_by_phy (
-		vnet_buffer (b0)->sw_if_index[VLIB_RX]);
-	      lip0 = lcp_itf_pair_get (lipi0);
-
-	      if (lip0)
-		{
-		  /*
-		   * rewind to eth header, copy, advance back to current
-		   */
-		  len0 = ((u8 *) vlib_buffer_get_current (b0) -
-			  (u8 *) ethernet_buffer_get_header (b0));
-		  vlib_buffer_advance (b0, -len0);
-		  c0 = vlib_buffer_copy (vm, b0);
-		  vlib_buffer_advance (b0, len0);
-
-		  if (c0)
-		    {
-		      /* Send to the host */
-		      vnet_buffer (c0)->sw_if_index[VLIB_TX] =
-			lip0->lip_host_sw_if_index;
-		      reply_copies[n_copies++] =
-			vlib_get_buffer_index (vm, c0);
-		    }
-		}
-	    }
-	  if (arp1->opcode == clib_host_to_net_u16 (ETHERNET_ARP_OPCODE_reply))
-	    {
-	      lcp_itf_pair_t *lip1 = 0;
-	      u32 lipi1;
-	      vlib_buffer_t *c1;
-	      u8 len1;
-
-	      lipi1 = lcp_itf_pair_find_by_phy (
-		vnet_buffer (b1)->sw_if_index[VLIB_RX]);
-	      lip1 = lcp_itf_pair_get (lipi1);
-
-	      if (lip1)
-		{
-		  /*
-		   * rewind to reveal the ethernet header
-		   */
-		  len1 = ((u8 *) vlib_buffer_get_current (b1) -
-			  (u8 *) ethernet_buffer_get_header (b1));
-		  vlib_buffer_advance (b1, -len1);
-		  c1 = vlib_buffer_copy (vm, b1);
-		  vlib_buffer_advance (b1, len1);
-
-		  if (c1)
-		    {
-		      /* Send to the host */
-		      vnet_buffer (c1)->sw_if_index[VLIB_TX] =
-			lip1->lip_host_sw_if_index;
-		      reply_copies[n_copies++] =
-			vlib_get_buffer_index (vm, c1);
-		    }
-		}
-	    }
+	  lcp_arp_copy_to_host (vm, b0, host_copies, &n_copies);
+	  lcp_arp_copy_to_host (vm, b1, host_copies, &n_copies);
 
 	  if (PREDICT_FALSE ((b0->flags & VLIB_BUFFER_IS_TRACED)))
 	    {
 	      lcp_arp_trace_t *t = vlib_add_trace (vm, node, b0, sizeof (*t));
 	      t->rx_sw_if_index = vnet_buffer (b0)->sw_if_index[VLIB_RX];
+	      t->arp_opcode = clib_host_to_net_u16 (arp0->opcode);
 	    }
 	  if (PREDICT_FALSE ((b1->flags & VLIB_BUFFER_IS_TRACED)))
 	    {
 	      lcp_arp_trace_t *t = vlib_add_trace (vm, node, b1, sizeof (*t));
 	      t->rx_sw_if_index = vnet_buffer (b1)->sw_if_index[VLIB_RX];
+	      t->arp_opcode = clib_host_to_net_u16 (arp1->opcode);
 	    }
 
 	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index, to_next,
@@ -928,45 +898,8 @@ VLIB_NODE_FN (lcp_arp_phy_node)
 
 	  vnet_feature_next (&next0, b0);
 
-	  /*
-	   * Replies might need to be received by the host, so we
-	   * make a copy of them.
-	   */
 	  arp_opcode = clib_host_to_net_u16 (arp0->opcode);
-
-	  if (arp_opcode == ETHERNET_ARP_OPCODE_reply)
-	    {
-	      lcp_itf_pair_t *lip0 = 0;
-	      vlib_buffer_t *c0;
-	      u32 lipi0;
-	      u8 len0;
-
-	      lipi0 = lcp_itf_pair_find_by_phy (
-		vnet_buffer (b0)->sw_if_index[VLIB_RX]);
-	      lip0 = lcp_itf_pair_get (lipi0);
-
-	      if (lip0)
-		{
-
-		  /*
-		   * rewind to reveal the ethernet header
-		   */
-		  len0 = ((u8 *) vlib_buffer_get_current (b0) -
-			  (u8 *) ethernet_buffer_get_header (b0));
-		  vlib_buffer_advance (b0, -len0);
-		  c0 = vlib_buffer_copy (vm, b0);
-		  vlib_buffer_advance (b0, len0);
-
-		  if (c0)
-		    {
-		      /* Send to the host */
-		      vnet_buffer (c0)->sw_if_index[VLIB_TX] =
-			lip0->lip_host_sw_if_index;
-		      reply_copies[n_copies++] =
-			vlib_get_buffer_index (vm, c0);
-		    }
-		}
-	    }
+	  lcp_arp_copy_to_host (vm, b0, host_copies, &n_copies);
 
 	  if (PREDICT_FALSE ((b0->flags & VLIB_BUFFER_IS_TRACED)))
 	    {
@@ -983,7 +916,7 @@ VLIB_NODE_FN (lcp_arp_phy_node)
     }
 
   if (n_copies)
-    vlib_buffer_enqueue_to_single_next (vm, node, reply_copies,
+    vlib_buffer_enqueue_to_single_next (vm, node, host_copies,
 					LCP_ARP_NEXT_IO, n_copies);
 
   return frame->n_vectors;

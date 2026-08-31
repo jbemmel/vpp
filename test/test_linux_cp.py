@@ -207,7 +207,8 @@ class TestLinuxCP(VppTestCase):
                 for rx in rxs:
                     self.assertEqual(p.show2(True), rx.show2(True))
 
-                # ARPs rx'd on the phy are sent to the host
+                # ARPs rx'd on the phy are sent to the host (replies and
+                # requests; Linux needs requests to learn neighbors).
                 p = Ether(dst="ff:ff:ff:ff:ff:ff", src=phy.remote_hosts[j].mac) / ARP(
                     op="is-at",
                     hwsrc=phy.remote_hosts[j].mac,
@@ -219,6 +220,18 @@ class TestLinuxCP(VppTestCase):
                 rxs = self.send_and_expect(phy, [p], host)
 
                 # verify packet is unchanged
+                for rx in rxs:
+                    self.assertEqual(p.show2(True), rx.show2(True))
+
+                p = Ether(dst="ff:ff:ff:ff:ff:ff", src=phy.remote_hosts[j].mac) / ARP(
+                    op="who-has",
+                    hwsrc=phy.remote_hosts[j].mac,
+                    psrc=phy.remote_hosts[j].ip4,
+                    pdst=phy.local_ip4,
+                )
+
+                rxs = self.send_and_expect(phy, [p], host)
+
                 for rx in rxs:
                     self.assertEqual(p.show2(True), rx.show2(True))
 
