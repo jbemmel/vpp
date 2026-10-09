@@ -44,20 +44,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Debug builds on aarch64
-          - build_type: 'debug'
-            os: 'ubuntu2204'
-            executor_arch: 'aarch64'
-            class: 'hst'
-            size: 'hst'
-          # Debug builds on x86_64
-          - build_type: 'debug'
-            os: 'ubuntu2204'
+        os: ['ubuntu2204', 'ubuntu2404']
+        executor_arch: ['x86_64', 'aarch64']
+        build_type: ['debug', 'release']
+        class: ['hst']
+        size: ['hst']
+        exclude:
+          # Exclude ubuntu2404 on x86_64 for all builds
+          - os: 'ubuntu2404'
             executor_arch: 'x86_64'
-            class: 'hst'
-            size: 'hst'
-
+          # Exclude ubuntu2204 on x86_64 for release build
+          - os: 'ubuntu2204'
+            executor_arch: 'x86_64'
+            build_type: 'release'
     env:
       FDIO_NAMESPACE: ${{ github.event.inputs.FDIO_NAMESPACE || 'prod' }}
       LOG_NAME: ""
@@ -139,7 +138,7 @@ jobs:
 
       - name: HST Test VPP
         if: success()
-        uses: fdio/vpp/.github/actions/vpp-hst-test@5c0def01c0f8a17f90a1b16c9039077e298e0adc
+        uses: fdio/vpp/.github/actions/vpp-hst-test@e970dcebe57999d0c04c63a466bb95604fcf9b4d
         timeout-minutes: 90
         with:
           LOG_DIR: ${{ env.LOG_DIR }}

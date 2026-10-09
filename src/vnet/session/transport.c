@@ -972,38 +972,73 @@ format_transport_pacer (u8 * s, va_list * args)
 
   now = transport_us_time_now (thread_index);
   diff = now - pacer->last_update;
-  s = format (s, "rate %lu bucket %ld t/p %.3f last_update %U min-burst %u burst %u",
-	      pacer->bytes_per_sec, pacer->bucket, pacer->tokens_per_period, format_clib_us_time,
-	      diff, pacer->min_burst, pacer->max_burst);
+  s = format (
+    s, "rate %lu bucket %.3f credit %.3f t/p %.3f last_update %U min-burst %u burst %u cap %u",
+    pacer->bytes_per_sec, pacer->bucket, pacer->catchup_credit, pacer->tokens_per_period,
+    format_clib_us_time, diff, (u32) pacer->min_burst, (u32) pacer->max_burst,
+    (u32) pacer->burst_cap);
   return s;
 }
 
-static inline u32
-spacer_max_burst (spacer_t * pacer, clib_us_time_t time_now)
-{
-  u64 n_periods = (time_now - pacer->last_update);
-  i64 inc;
+#define SPACER_CATCHUP_RATE_GAIN    1.25
+#define SPACER_CATCHUP_CREDIT_SHARE ((SPACER_CATCHUP_RATE_GAIN - 1.0) / SPACER_CATCHUP_RATE_GAIN)
 
-  if ((inc = (f32) n_periods * pacer->tokens_per_period) > 10)
+static inline void
+spacer_update_time (spacer_t *pacer, clib_us_time_t time_now, u8 force)
+{
+  i64 n_periods = time_now - pacer->last_update;
+  f64 inc;
+
+  inc = n_periods * pacer->tokens_per_period;
+  if (force || inc > 10)
     {
       pacer->last_update = time_now;
-      pacer->bucket = clib_min (pacer->bucket + inc, (i64) pacer->max_burst);
+      pacer->bucket += inc;
+      if (pacer->bucket > 0)
+	{
+	  pacer->catchup_credit =
+	    clib_min (pacer->catchup_credit + pacer->bucket, (f64) pacer->burst_cap);
+	  pacer->bucket = 0;
+	}
     }
+}
 
-  return pacer->bucket >= 0 ? pacer->max_burst : 0;
+static inline u32
+spacer_max_burst (spacer_t *pacer, clib_us_time_t time_now)
+{
+  u32 burst;
+
+  spacer_update_time (pacer, time_now, 0 /* force */);
+
+  if (pacer->bucket < 0)
+    return 0;
+
+  /* Recover service missed while runnable without exceeding the hard cap. */
+  burst = pacer->max_burst + (u32) pacer->catchup_credit;
+  return clib_min (burst, (u32) pacer->burst_cap);
 }
 
 static inline void
 spacer_update_bucket (spacer_t * pacer, u32 bytes)
 {
+  f64 credit_used;
+
   pacer->bucket -= bytes;
+  if (PREDICT_FALSE (pacer->catchup_credit > 0))
+    {
+      /* Spending this share bounds catch-up to SPACER_CATCHUP_RATE_GAIN. */
+      credit_used = clib_min (pacer->catchup_credit, (f64) bytes * SPACER_CATCHUP_CREDIT_SHARE);
+      pacer->catchup_credit -= credit_used;
+      pacer->bucket += credit_used;
+    }
 }
 
 static inline void
-spacer_set_pace_rate (spacer_t * pacer, u64 rate_bytes_per_sec,
-		      clib_us_time_t rtt, clib_time_type_t sec_per_loop)
+spacer_set_pace_rate (spacer_t *pacer, u64 rate_bytes_per_sec, clib_us_time_t rtt,
+		      clib_time_type_t sec_per_loop)
 {
-  clib_us_time_t max_time;
+  clib_time_type_t max_time;
+  u64 max_burst;
 
   ASSERT (rate_bytes_per_sec != 0);
   pacer->bytes_per_sec = rate_bytes_per_sec;
@@ -1018,11 +1053,10 @@ spacer_set_pace_rate (spacer_t * pacer, u64 rate_bytes_per_sec,
    *
    * Max "time-length" of a burst cannot be less than 1us or more than 1ms.
    */
-  max_time = clib_max (rtt / TRANSPORT_PACER_BURSTS_PER_RTT,
-		       (clib_us_time_t) (sec_per_loop * CLIB_US_TIME_FREQ));
-  max_time = clib_clamp (max_time, 1 /* 1us */ , 1000 /* 1ms */ );
-  pacer->max_burst = (rate_bytes_per_sec * max_time) * CLIB_US_TIME_PERIOD;
-  pacer->max_burst = clib_clamp (pacer->max_burst, pacer->min_burst, TRANSPORT_PACER_MAX_BURST);
+  max_time = clib_max (rtt * (CLIB_US_TIME_PERIOD / TRANSPORT_PACER_BURSTS_PER_RTT), sec_per_loop);
+  max_time = clib_clamp (max_time, CLIB_US_TIME_PERIOD, 1e-3 /* 1ms */);
+  max_burst = rate_bytes_per_sec * max_time;
+  pacer->max_burst = clib_clamp (max_burst, (u64) pacer->min_burst, (u64) pacer->burst_cap);
 }
 
 static inline u64
@@ -1035,7 +1069,8 @@ static inline void
 spacer_reset (spacer_t * pacer, clib_us_time_t time_now, u64 bucket)
 {
   pacer->last_update = time_now;
-  pacer->bucket = bucket;
+  pacer->bucket = 0;
+  pacer->catchup_credit = clib_min ((f64) bucket, (f64) pacer->burst_cap);
 }
 
 void
@@ -1057,11 +1092,36 @@ transport_connection_tx_pacer_reset_bucket (transport_connection_t * tc,
 }
 
 void
+transport_connection_tx_pacer_clear_credit (transport_connection_t *tc)
+{
+  spacer_t *pacer = &tc->pacer;
+  clib_us_time_t now = transport_us_time_now (tc->thread_index);
+
+  spacer_update_time (pacer, now, 1 /* force */);
+  pacer->catchup_credit = 0;
+}
+
+void
+transport_connection_tx_pacer_set_burst_limits (transport_connection_t *tc, u32 min_burst,
+						u32 burst_cap)
+{
+  spacer_t *pacer = &tc->pacer;
+
+  min_burst =
+    clib_clamp (min_burst, (u32) TRANSPORT_PACER_MIN_BURST, (u32) TRANSPORT_PACER_MAX_BURST);
+  burst_cap = clib_clamp (burst_cap, min_burst, (u32) TRANSPORT_PACER_MAX_BURST);
+  pacer->min_burst = (u16) min_burst;
+  pacer->burst_cap = (u16) burst_cap;
+  pacer->max_burst = clib_clamp ((u32) pacer->max_burst, min_burst, burst_cap);
+  pacer->catchup_credit = clib_min (pacer->catchup_credit, (f64) pacer->burst_cap);
+}
+
+void
 transport_connection_tx_pacer_init (transport_connection_t *tc, u64 rate_bytes_per_sec,
 				    u32 initial_bucket, u32 min_burst)
 {
   tc->flags |= TRANSPORT_CONNECTION_F_IS_TX_PACED;
-  tc->pacer.min_burst = clib_max (min_burst, (u32) TRANSPORT_PACER_MIN_BURST);
+  transport_connection_tx_pacer_set_burst_limits (tc, min_burst, TRANSPORT_PACER_MAX_BURST);
   transport_connection_tx_pacer_reset (tc, rate_bytes_per_sec,
 				       initial_bucket, 1e6);
 }
@@ -1070,6 +1130,8 @@ void
 transport_connection_tx_pacer_update (transport_connection_t * tc,
 				      u64 bytes_per_sec, clib_us_time_t rtt)
 {
+  if (tc->pacer.bytes_per_sec != bytes_per_sec)
+    spacer_update_time (&tc->pacer, transport_us_time_now (tc->thread_index), 1 /* force */);
   spacer_set_pace_rate (&tc->pacer, bytes_per_sec, rtt,
 			transport_seconds_per_loop (tc->thread_index));
 }
@@ -1111,8 +1173,8 @@ transport_update_pacer_time (clib_thread_index_t thread_index,
 void
 transport_connection_reschedule (transport_connection_t * tc)
 {
-  tc->flags &= ~TRANSPORT_CONNECTION_F_DESCHED;
-  transport_connection_tx_pacer_reset_bucket (tc, 0 /* bucket */);
+  transport_connection_tx_reactivate (tc);
+
   if (transport_max_tx_dequeue (tc))
     sesssion_reschedule_tx (tc);
   else

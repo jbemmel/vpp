@@ -342,7 +342,9 @@ typedef struct
 
   /* single-interface binding */
   vnet_flow_driver_data_t driver_data;
-  u32 __pad0;
+
+  /* template only */
+  u32 n_flows;
 
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline1);
 
@@ -362,11 +364,19 @@ typedef struct
 STATIC_ASSERT (sizeof (vnet_flow_t) <= 4 * CLIB_CACHE_LINE_BYTES,
 	       "vnet_flow_t must fit in 4 cache lines");
 
-int vnet_flow_get_range (vnet_main_t *vnm, char *owner, u32 count, u32 *start);
-int vnet_flow_add (vnet_main_t *vnm, vnet_flow_t *flow, u32 *flow_index);
-int vnet_flow_enable (vnet_main_t *vnm, u32 flow_index, u32 hw_if_index);
+__clib_export int vnet_flow_get_range (vnet_main_t *vnm, char *owner, u32 count, u32 *start);
+__clib_export int vnet_flow_add (vnet_main_t *vnm, vnet_flow_t *flow, u32 *flow_index);
+__clib_export int vnet_flow_enable (vnet_main_t *vnm, u32 flow_index, u32 hw_if_index);
 int vnet_flow_disable (vnet_main_t *vnm, u32 flow_index);
-int vnet_flow_del (vnet_main_t *vnm, u32 flow_index);
+__clib_export int vnet_flow_del (vnet_main_t *vnm, u32 flow_index);
+int vnet_flow_template_add (vnet_main_t *vnm, vnet_flow_t *flow, u32 *flow_template_index);
+int vnet_flow_template_del (vnet_main_t *vnm, u32 flow_template_index);
+int vnet_flow_template_enable (vnet_main_t *vnm, u32 flow_template_index, u32 hw_if_index,
+			       u32 n_flows);
+int vnet_flow_template_disable (vnet_main_t *vnm, u32 flow_template_index);
+int vnet_flow_async_range_enable (vnet_main_t *vnm, u32 flow_template_index, u32 *flow_indices,
+				  u32 hw_if_index);
+int vnet_flow_async_range_disable (vnet_main_t *vnm, u32 *flow_indices, u32 hw_if_index);
 
 typedef struct
 {
@@ -379,6 +389,7 @@ typedef struct
 {
   /* pool of device flow entries */
   vnet_flow_t *global_flow_pool;
+  vnet_flow_t *global_flow_template_pool;
 
   /* flow ids allocated */
   u32 flows_used;
@@ -389,10 +400,10 @@ typedef struct
   u16 msg_id_base;
 } vnet_flow_main_t;
 
-extern vnet_flow_main_t flow_main;
+__clib_export extern vnet_flow_main_t flow_main;
 
-format_function_t format_flow_actions;
-format_function_t format_flow_enabled_hw;
+__clib_export format_function_t format_flow_actions;
+__clib_export format_function_t format_flow_enabled_hw;
 
 always_inline vnet_flow_t *
 vnet_get_flow (u32 flow_index)
@@ -402,6 +413,16 @@ vnet_get_flow (u32 flow_index)
     return 0;
 
   return pool_elt_at_index (fm->global_flow_pool, flow_index);
+}
+
+always_inline vnet_flow_t *
+vnet_get_flow_template (u32 flow_template_index)
+{
+  vnet_flow_main_t *fm = &flow_main;
+  if (pool_is_free_index (fm->global_flow_template_pool, flow_template_index))
+    return 0;
+
+  return pool_elt_at_index (fm->global_flow_template_pool, flow_template_index);
 }
 
 #endif /* included_vnet_flow_flow_h */

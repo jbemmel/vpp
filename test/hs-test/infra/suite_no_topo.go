@@ -101,6 +101,8 @@ func (s *NoTopoSuite) TeardownTest() {
 	defer s.HstSuite.TeardownTest()
 	if CurrentSpecReport().Failed() {
 		CollectNginxLogs(s.Containers.NginxHttp3)
+		CollectRedisServerLogs(s.Containers.ServerApp)
+		Log(s.Containers.Vpp.VppInstance.Vppctl("show error verbose"))
 	}
 }
 
@@ -305,7 +307,7 @@ var _ = DescribeMWSuite("NoTopoMWSuite", []string{"Generic", "MW"}, func() {
 			testName := filename + "/" + funcName
 			decorators := []any{SpecTimeout(TestTimeout)}
 			switch funcName {
-			case "BuiltinEchoVclClientCutThruMWTest",
+			case "BuiltinVperfVclClientCutThruMWTest",
 				"LdpIperfTcpCutThruMWTest", "LdpIperfUdpCutThruMWTest":
 				if MWParallelEnabled() {
 					decorators = append(decorators, Label(MWWideLabel))

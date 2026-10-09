@@ -18,6 +18,8 @@
 #define TRANSPORT_PACER_MIN_IDLE	100
 #define TRANSPORT_PACER_IDLE_FACTOR	0.05
 
+STATIC_ASSERT (TRANSPORT_PACER_MAX_BURST <= CLIB_U16_MAX, "pacer burst sizes must fit in u16");
+
 typedef struct _transport_options_t
 {
   char *name;
@@ -121,7 +123,7 @@ typedef struct _transport_proto_vft
   transport_options_t transport_options;
 } transport_proto_vft_t;
 
-extern transport_proto_vft_t *tp_vfts;
+__clib_export extern transport_proto_vft_t *tp_vfts;
 
 #define transport_proto_foreach(VAR, VAR_ALLOW_BM)                            \
   for (VAR = 0; VAR < vec_len (tp_vfts); VAR++)                               \
@@ -135,12 +137,11 @@ int transport_connect_stream (transport_proto_t tp,
 void transport_half_close (transport_proto_t tp, u32 conn_index,
 			   u8 thread_index);
 void transport_close (transport_proto_t tp, u32 conn_index, u8 thread_index);
-void transport_reset (transport_proto_t tp, u32 conn_index, u8 thread_index);
+__clib_export void transport_reset (transport_proto_t tp, u32 conn_index, u8 thread_index);
 u32 transport_start_listen (transport_proto_t tp, u32 session_index,
 			    transport_endpoint_cfg_t *tep);
 u32 transport_stop_listen (transport_proto_t tp, u32 conn_index);
-void transport_cleanup (transport_proto_t tp, u32 conn_index,
-			u8 thread_index);
+__clib_export void transport_cleanup (transport_proto_t tp, u32 conn_index, u8 thread_index);
 void transport_cleanup_half_open (transport_proto_t tp, u32 conn_index);
 void transport_get_endpoint (transport_proto_t tp, u32 conn_index,
 			     clib_thread_index_t thread_index,
@@ -149,9 +150,9 @@ void transport_get_endpoint (transport_proto_t tp, u32 conn_index,
 void transport_get_listener_endpoint (transport_proto_t tp, u32 conn_index,
 				      transport_endpoint_t *tep_rmt,
 				      transport_endpoint_t *tep_lcl);
-int transport_connection_attribute (transport_proto_t tp, u32 conn_index,
-				    u8 thread_index, u8 is_get,
-				    transport_endpt_attr_t *attr);
+__clib_export int transport_connection_attribute (transport_proto_t tp, u32 conn_index,
+						  u8 thread_index, u8 is_get,
+						  transport_endpt_attr_t *attr);
 
 static inline transport_connection_t *
 transport_get_connection (transport_proto_t tp, u32 conn_index,
@@ -225,8 +226,8 @@ transport_connection_is_cless (transport_connection_t * tc)
   return ((tc->flags & TRANSPORT_CONNECTION_F_CLESS) ? 1 : 0);
 }
 
-void transport_connection_reschedule (transport_connection_t * tc);
-void transport_fifos_init_ooo (transport_connection_t * tc);
+__clib_export void transport_connection_reschedule (transport_connection_t *tc);
+__clib_export void transport_fifos_init_ooo (transport_connection_t *tc);
 
 /**
  * Register transport virtual function table.
@@ -237,9 +238,9 @@ void transport_fifos_init_ooo (transport_connection_t * tc);
  * @param output_node - output node index that session layer will hand off
  * 			buffers to, for requested fib proto
  */
-void transport_register_protocol (transport_proto_t transport_proto,
-				  const transport_proto_vft_t * vft,
-				  fib_protocol_t fib_proto, u32 output_node);
+__clib_export void transport_register_protocol (transport_proto_t transport_proto,
+						const transport_proto_vft_t *vft,
+						fib_protocol_t fib_proto, u32 output_node);
 transport_proto_t
 transport_register_new_protocol (const transport_proto_vft_t * vft,
 				 fib_protocol_t fib_proto, u32 output_node);
@@ -255,7 +256,7 @@ void transport_share_local_endpoint (u8 proto, u32 fib_index,
 int transport_mark_used_local_endpoint (u8 proto, u32 fib_index, ip46_address_t *ip, u16 port);
 int transport_release_local_endpoint (u8 proto, u32 fib_index, ip46_address_t *lcl_ip, u16 port);
 u16 transport_port_alloc_max_tries ();
-u32 transport_port_local_in_use ();
+__clib_export u32 transport_port_local_in_use ();
 void transport_clear_stats ();
 void transport_enable_disable (vlib_main_t * vm, u8 is_en);
 void transport_init (void);
@@ -270,41 +271,48 @@ transport_elog_track_index (transport_connection_t * tc)
 #endif
 }
 
-void transport_connection_tx_pacer_reset (transport_connection_t * tc,
-					  u64 rate_bytes_per_sec,
-					  u32 initial_bucket,
-					  clib_us_time_t rtt);
+__clib_export void transport_connection_tx_pacer_reset (transport_connection_t *tc,
+							u64 rate_bytes_per_sec, u32 initial_bucket,
+							clib_us_time_t rtt);
 /**
  * Initialize tx pacer for connection
  *
- * @param tc				transport connection
- * @param rate_bytes_per_second		initial byte rate
- * @param burst_bytes			initial burst size in bytes
+ * @param tc			transport connection
+ * @param rate_bytes_per_sec	initial byte rate
+ * @param initial_bucket	initial credit in bytes
+ * @param min_burst		minimum burst size in bytes
  */
-void transport_connection_tx_pacer_init (transport_connection_t *tc, u64 rate_bytes_per_sec,
-					 u32 initial_bucket, u32 min_burst);
+__clib_export void transport_connection_tx_pacer_init (transport_connection_t *tc,
+						       u64 rate_bytes_per_sec, u32 initial_bucket,
+						       u32 min_burst);
+
+/**
+ * Set tx pacer burst boundaries
+ *
+ * @param tc		transport connection
+ * @param min_burst	minimum nominal burst in bytes
+ * @param burst_cap	hard burst limit in bytes
+ */
+__clib_export void transport_connection_tx_pacer_set_burst_limits (transport_connection_t *tc,
+								   u32 min_burst, u32 burst_cap);
 
 /**
  * Update tx pacer pacing rate
  *
  * @param tc			transport connection
  * @param bytes_per_sec		new pacing rate
- * @param rtt			connection rtt that is used to compute
- * 				inactivity time after which pacer bucket is
- * 				reset to 1 mtu
+ * @param rtt			connection RTT used to size the nominal burst
  */
-void transport_connection_tx_pacer_update (transport_connection_t * tc,
-					   u64 bytes_per_sec,
-					   clib_us_time_t rtt);
+__clib_export void transport_connection_tx_pacer_update (transport_connection_t *tc,
+							 u64 bytes_per_sec, clib_us_time_t rtt);
 
 /**
  * Get tx pacer max burst
  *
  * @param tc		transport connection
- * @param time_now	current cpu time
  * @return		max burst for connection
  */
-u32 transport_connection_tx_pacer_burst (transport_connection_t * tc);
+__clib_export u32 transport_connection_tx_pacer_burst (transport_connection_t *tc);
 
 /**
  * Get tx pacer current rate
@@ -324,6 +332,11 @@ void transport_connection_tx_pacer_reset_bucket (transport_connection_t * tc,
 						 u32 bucket);
 
 /**
+ * Clear accumulated tx pacer credit without forgiving debt
+ */
+__clib_export void transport_connection_tx_pacer_clear_credit (transport_connection_t *tc);
+
+/**
  * Check if transport connection is paced
  */
 always_inline u8
@@ -333,16 +346,19 @@ transport_connection_is_tx_paced (transport_connection_t * tc)
 }
 
 /**
- * Clear descheduled flag and update pacer if needed
+ * Reactivate a descheduled transport connection
  *
- * To add session to scheduler use @ref transport_connection_reschedule
+ * Clears descheduled state and pacer credit without forgiving debt. Does not
+ * enqueue tx work; use @ref transport_connection_reschedule for that.
  */
 always_inline void
-transport_connection_clear_descheduled (transport_connection_t *tc)
+transport_connection_tx_reactivate (transport_connection_t *tc)
 {
+  ASSERT (transport_connection_is_descheduled (tc));
+
   tc->flags &= ~TRANSPORT_CONNECTION_F_DESCHED;
   if (transport_connection_is_tx_paced (tc))
-    transport_connection_tx_pacer_reset_bucket (tc, 0 /* bucket */);
+    transport_connection_tx_pacer_clear_credit (tc);
 }
 
 u8 *format_transport_pacer (u8 * s, va_list * args);
@@ -359,9 +375,8 @@ u8 *format_transport_pacer (u8 * s, va_list * args);
 void transport_connection_update_tx_bytes (transport_connection_t * tc,
 					   u32 bytes);
 
-void
-transport_connection_tx_pacer_update_bytes (transport_connection_t * tc,
-					    u32 bytes);
+__clib_export void transport_connection_tx_pacer_update_bytes (transport_connection_t *tc,
+							       u32 bytes);
 
 /**
  * Request pacer time update

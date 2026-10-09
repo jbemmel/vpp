@@ -126,6 +126,12 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/${VPP_LIBRARY_DIR})
 set(VPP_BINARY_DIR ${CMAKE_BINARY_DIR}/CMakeFiles)
 set(PYENV PYTHONPYCACHEPREFIX=${CMAKE_BINARY_DIR}/CMakeFiles/__pycache__)
 
+install(
+  PROGRAMS scripts/vpp-check-libvnet-exports.sh
+  DESTINATION ${VPP_RUNTIME_DIR}
+  COMPONENT vpp-dev
+)
+
 if (CMAKE_BUILD_TYPE)
   add_compile_options(-g -Werror -Wall)
 endif()
@@ -174,6 +180,14 @@ if(VPP_USE_LTO)
   check_c_compiler_flag("-Wno-stringop-overflow"
 		        compiler_flag_no_stringop_overflow)
 endif()
+
+##############################################################################
+# libvnet symbol visibility
+##############################################################################
+
+option(VPP_LIBVNET_HIDDEN_VISIBILITY
+  "Build libvnet with hidden visibility and explicit exports" ON)
+
 ##############################################################################
 # sanitizers
 ##############################################################################
@@ -381,6 +395,57 @@ add_custom_target(config
   COMMENT "Starting Configuration TUI..."
   USES_TERMINAL
 )
+
+if(TARGET vnet AND CMAKE_READELF)
+  set(_vnet_export_check_dependencies vnet vpp)
+  set(_vnet_export_check_consumers $<TARGET_FILE:vpp>)
+
+  get_property(_vnet_export_check_plugins GLOBAL PROPERTY VPP_PLUGINS_LIST)
+  foreach(name ${_vnet_export_check_plugins})
+    if(TARGET ${name}_plugin)
+      list(APPEND _vnet_export_check_dependencies ${name}_plugin)
+      list(APPEND _vnet_export_check_consumers $<TARGET_FILE:${name}_plugin>)
+    endif()
+  endforeach()
+
+  get_property(_vnet_export_check_drivers GLOBAL PROPERTY VPP_DRIVERS_LIST)
+  foreach(name ${_vnet_export_check_drivers})
+    if(TARGET ${name}_driver)
+      list(APPEND _vnet_export_check_dependencies ${name}_driver)
+      list(APPEND _vnet_export_check_consumers $<TARGET_FILE:${name}_driver>)
+    endif()
+  endforeach()
+
+  get_property(_vnet_export_check_engines GLOBAL PROPERTY VPP_CRYPTO_ENGINES_LIST)
+  foreach(name ${_vnet_export_check_engines})
+    if(TARGET ${name}_crypto_engine)
+      list(APPEND _vnet_export_check_dependencies ${name}_crypto_engine)
+      list(APPEND _vnet_export_check_consumers
+        $<TARGET_FILE:${name}_crypto_engine>)
+    endif()
+  endforeach()
+
+  set(_vnet_export_check_stamp
+    ${CMAKE_CURRENT_BINARY_DIR}/CMakeFiles/check-vnet-exports.stamp)
+
+  add_custom_command(OUTPUT ${_vnet_export_check_stamp}
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vnet_exports.sh
+      ${CMAKE_READELF}
+      $<TARGET_FILE:vnet>
+      ${_vnet_export_check_consumers}
+    COMMAND ${CMAKE_COMMAND} -E touch ${_vnet_export_check_stamp}
+    DEPENDS
+      ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vnet_exports.sh
+      ${_vnet_export_check_dependencies}
+    COMMENT "Checking libvnet exports used by in-tree consumers"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
+  )
+
+  add_custom_target(check-vnet-exports ALL
+    DEPENDS ${_vnet_export_check_stamp}
+  )
+endif()
 
 foreach(bt ${BUILD_TYPES})
   add_custom_target(set-build-type-${bt}

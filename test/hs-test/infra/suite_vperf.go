@@ -1,6 +1,7 @@
 package hst
 
 import (
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -8,26 +9,30 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 )
 
-var echoTests = map[string][]func(s *EchoSuite){}
-var echoSoloTests = map[string][]func(s *EchoSuite){}
-var echoMWTests = map[string][]func(s *EchoSuite){}
+var vperfTests = map[string][]func(s *VperfSuite){}
+var vperfSoloTests = map[string][]func(s *VperfSuite){}
+var vperfManualTests = map[string][]func(s *VperfSuite){}
+var vperfMWTests = map[string][]func(s *VperfSuite){}
 
-type EchoSuite struct {
+type VperfSuite struct {
 	TapSuite
 }
 
-func RegisterEchoTests(tests ...func(s *EchoSuite)) {
-	echoTests[GetTestFilename()] = tests
+func RegisterVperfTests(tests ...func(s *VperfSuite)) {
+	vperfTests[GetTestFilename()] = tests
 }
-func RegisterSoloEchoTests(tests ...func(s *EchoSuite)) {
-	echoSoloTests[GetTestFilename()] = tests
+func RegisterSoloVperfTests(tests ...func(s *VperfSuite)) {
+	vperfSoloTests[GetTestFilename()] = tests
 }
-func RegisterEchoMWTests(tests ...func(s *EchoSuite)) {
-	echoMWTests[GetTestFilename()] = tests
+func RegisterManualVperfTests(tests ...func(s *VperfSuite)) {
+	vperfManualTests[GetTestFilename()] = tests
+}
+func RegisterVperfMWTests(tests ...func(s *VperfSuite)) {
+	vperfMWTests[GetTestFilename()] = tests
 }
 
-var _ = Describe("EchoSuite", Ordered, ContinueOnFailure, Label("Tap", "Echo"), func() {
-	var s EchoSuite
+var _ = Describe("VperfSuite", Ordered, ContinueOnFailure, Label("Tap", "Vperf"), func() {
+	var s VperfSuite
 	BeforeAll(func() {
 		s.SetupSuite()
 	})
@@ -43,7 +48,7 @@ var _ = Describe("EchoSuite", Ordered, ContinueOnFailure, Label("Tap", "Echo"), 
 	})
 
 	// https://onsi.github.io/ginkgo/#dynamically-generating-specs
-	for filename, tests := range echoTests {
+	for filename, tests := range vperfTests {
 		for _, test := range tests {
 			test := test
 			pc := reflect.ValueOf(test).Pointer()
@@ -55,10 +60,27 @@ var _ = Describe("EchoSuite", Ordered, ContinueOnFailure, Label("Tap", "Echo"), 
 			}, SpecTimeout(TestTimeout))
 		}
 	}
+	for filename, tests := range vperfManualTests {
+		for _, test := range tests {
+			test := test
+			pc := reflect.ValueOf(test).Pointer()
+			funcValue := runtime.FuncForPC(pc)
+			testName := filename + "/" + strings.Split(funcValue.Name(), ".")[2]
+			decorators := []any{Label("Manual"), SpecTimeout(TestTimeout)}
+			if os.Getenv("GITHUB_REPO_URL") != "" {
+				decorators = append(decorators, Pending)
+			}
+			decorators = append(decorators, func(ctx SpecContext) {
+				Log("[* TEST BEGIN]: " + testName)
+				test(&s)
+			})
+			It(testName, decorators...)
+		}
+	}
 })
 
-var _ = Describe("EchoSuiteSolo", Ordered, ContinueOnFailure, Serial, Label("Tap", "Echo"), func() {
-	var s EchoSuite
+var _ = Describe("VperfSuiteSolo", Ordered, ContinueOnFailure, Serial, Label("Tap", "Vperf"), func() {
+	var s VperfSuite
 	BeforeAll(func() {
 		s.SetupSuite()
 	})
@@ -73,7 +95,7 @@ var _ = Describe("EchoSuiteSolo", Ordered, ContinueOnFailure, Serial, Label("Tap
 	})
 
 	// https://onsi.github.io/ginkgo/#dynamically-generating-specs
-	for filename, tests := range echoSoloTests {
+	for filename, tests := range vperfSoloTests {
 		for _, test := range tests {
 			test := test
 			pc := reflect.ValueOf(test).Pointer()
@@ -87,8 +109,8 @@ var _ = Describe("EchoSuiteSolo", Ordered, ContinueOnFailure, Serial, Label("Tap
 	}
 })
 
-var _ = DescribeMWSuite("EchoSuiteMW", []string{"Tap", "Echo", "MW"}, func() {
-	var s EchoSuite
+var _ = DescribeMWSuite("VperfSuiteMW", []string{"Tap", "Vperf", "MW"}, func() {
+	var s VperfSuite
 	BeforeAll(func() {
 		s.SetupSuite()
 	})
@@ -103,7 +125,7 @@ var _ = DescribeMWSuite("EchoSuiteMW", []string{"Tap", "Echo", "MW"}, func() {
 	})
 
 	// https://onsi.github.io/ginkgo/#dynamically-generating-specs
-	for filename, tests := range echoMWTests {
+	for filename, tests := range vperfMWTests {
 		for _, test := range tests {
 			test := test
 			pc := reflect.ValueOf(test).Pointer()
@@ -112,10 +134,10 @@ var _ = DescribeMWSuite("EchoSuiteMW", []string{"Tap", "Echo", "MW"}, func() {
 			testName := filename + "/" + funcName
 			labels := []string{"SOLO", "VPP Multi-Worker"}
 			switch funcName {
-			case "EchoBuiltinHttp1CpsMWTest",
-				"EchoBuiltinHttp2CpsMWTest",
-				"EchoBuiltinHttp3CpsMWTest",
-				"EchoBuiltinHttp2ConnectUdpBackpressureMWTest":
+			case "VperfBuiltinHttp1CpsMWTest",
+				"VperfBuiltinHttp2CpsMWTest",
+				"VperfBuiltinHttp3CpsMWTest",
+				"VperfBuiltinHttp2ConnectUdpBackpressureMWTest":
 				labels = MWWideLabels(labels...)
 			}
 			It(testName, Label(labels...), func(ctx SpecContext) {

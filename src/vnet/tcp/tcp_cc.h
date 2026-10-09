@@ -7,6 +7,7 @@
 #define SRC_VNET_TCP_TCP_CC_H_
 
 #include <vnet/tcp/tcp_types.h>
+#include <vnet/tcp/tcp_bt.h>
 
 always_inline void
 tcp_cc_rcv_ack (tcp_connection_t *tc, tcp_ack_ctx_t *ac)
@@ -63,17 +64,38 @@ tcp_cc_event (tcp_connection_t * tc, tcp_cc_event_t evt)
     tc->cc_algo->event (tc, evt);
 }
 
-static inline u64
-tcp_cc_get_pacing_rate (tcp_connection_t * tc)
+static inline void
+tcp_cc_lost_sample (tcp_connection_t *tc, const tcp_bt_sample_t *bts)
 {
-  if (tc->cc_algo->get_pacing_rate)
-    return tc->cc_algo->get_pacing_rate (tc);
+  tcp_cc_loss_sample_t sample;
 
+  if (!tc->cc_algo->lost_sample)
+    return;
+
+  sample.tx_in_flight = bts->tx_in_flight;
+  sample.tx_lost = bts->tx_lost;
+  sample.bytes = bts->max_seq - bts->min_seq;
+  sample.flags = bts->flags;
+  tc->cc_algo->lost_sample (tc, &sample);
+}
+
+static inline u64
+tcp_cc_window_pacing_rate (tcp_connection_t *tc, f64 gain)
+{
   f64 srtt = clib_min ((f64) tc->srtt * TCP_TICK, tc->mrtt_us);
 
   /* TODO should constrain to interface's max throughput but
    * we don't have link speeds for sw ifs ..*/
-  return ((f64) tc->cwnd / srtt);
+  return (gain * tc->cwnd / srtt);
+}
+
+static inline u64
+tcp_cc_get_pacing_rate (tcp_connection_t *tc)
+{
+  if (tc->cc_algo->get_pacing_rate)
+    return tc->cc_algo->get_pacing_rate (tc);
+
+  return tcp_cc_window_pacing_rate (tc, 1.0);
 }
 
 static inline void *
@@ -118,6 +140,24 @@ tcp_cc_update_cwnd_limited (tcp_connection_t *tc, u32 max_dequeue)
     }
 }
 
+/**
+ * Record whether cwnd or the application limited a send burst.
+ *
+ * Apps enqueue without notifying tcp, so it cannot check app-limited state at each write. Running
+ * dry after a burst sets the same marker the next write would, because acks move bytes from flight
+ * to delivered until more data is sent.
+ *
+ * @param tc		tcp connection
+ * @param max_dequeue	tx fifo bytes at burst start, including outstanding data
+ */
+always_inline void
+tcp_cc_check_limited (tcp_connection_t *tc, u32 max_dequeue)
+{
+  tcp_cc_update_cwnd_limited (tc, max_dequeue);
+  if (tc->cfg_flags & TCP_CFG_F_BYTE_TRACKER)
+    tcp_bt_check_app_limited (tc, max_dequeue - (tc->snd_nxt - tc->snd_una));
+}
+
 /** Return true if this ACK covers a flight that permits cwnd growth. */
 always_inline u8
 tcp_cc_is_cwnd_limited (const tcp_connection_t *tc, const tcp_ack_ctx_t *ac)
@@ -135,7 +175,7 @@ void tcp_cc_algo_register (tcp_cc_algorithm_type_e type,
  * Register new cc algo type
  */
 tcp_cc_algorithm_type_e tcp_cc_algo_new_type (const tcp_cc_algorithm_t * vft);
-tcp_cc_algorithm_t *tcp_cc_algo_get (tcp_cc_algorithm_type_e type);
+__clib_export tcp_cc_algorithm_t *tcp_cc_algo_get (tcp_cc_algorithm_type_e type);
 
 void newreno_rcv_cong_ack (tcp_connection_t *tc, tcp_cc_ack_t ack_type, tcp_ack_ctx_t *ac);
 

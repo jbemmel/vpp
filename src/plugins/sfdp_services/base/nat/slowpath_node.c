@@ -103,16 +103,21 @@ nat_slow_path_process_one (sfdp_main_t *sfdp, u32 *fib_index_by_sw_if_index,
       goto end_of_packet;
     }
 
-  /* TODO: handle case with many addresses in pool (slowpath) */
-  if (PREDICT_FALSE (pool->num > NAT_ALLOC_POOL_ARRAY_SZ))
-    ASSERT (0);
-
   new_key->context_id = tenant->reverse_context;
 
   /* Allocate a new source */
   ip4_old_src_addr = *ip4_key_src_addr;
-  src_addr_index = ip4_old_src_addr % pool->num;
-  ip4_new_src_addr = pool->addr[src_addr_index].as_u32;
+  src_addr_index = ntohl (ip4_old_src_addr) % pool->num;
+  if (src_addr_index < NAT_ALLOC_POOL_ARRAY_SZ)
+    {
+      ip4_new_src_addr = pool->addr[src_addr_index].as_u32;
+    }
+  else
+    {
+      ASSERT (pool->remaining != 0);
+      ASSERT (vec_len (pool->remaining) > src_addr_index - NAT_ALLOC_POOL_ARRAY_SZ);
+      ip4_new_src_addr = pool->remaining[src_addr_index - NAT_ALLOC_POOL_ARRAY_SZ].as_u32;
+    }
   *ip4_key_src_addr = ip4_new_src_addr;
   pseudo_dir = sfdp_renormalise_ip4_key (new_key, pseudo_dir);
   pseudo_flow_index = (session_index << 1) | (pseudo_dir & 0x1);
@@ -282,8 +287,8 @@ VLIB_REGISTER_NODE (sfdp_nat_slowpath_node) = {
 
 SFDP_SERVICE_DEFINE (nat_output) = {
   .node_name = "sfdp-nat-output",
-  .runs_before = SFDP_SERVICES ("sfdp-geneve-output", "sfdp-nat-late-rewrite"),
-  .runs_after = SFDP_SERVICES ("sfdp-drop", "sfdp-l4-lifecycle",
-			       "sfdp-tcp-check"),
+  .runs_before = SFDP_SERVICES ("sfdp-geneve-output", "sfdp-nat-late-rewrite", "ip4-lookup",
+				"ip6-lookup"),
+  .runs_after = SFDP_SERVICES ("sfdp-drop", "sfdp-l4-lifecycle", "sfdp-tcp-check"),
   .is_terminal = 0
 };

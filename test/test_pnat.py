@@ -40,7 +40,7 @@ class TestPNAT(VppTestCase):
                 i.admin_down()
 
     def validate(self, rx, expected):
-        self.assertTrue(bytes(rx), bytes(expected))
+        self.assertEqual(bytes(rx), bytes(expected))
 
     def validate_bytes(self, rx, expected):
         self.assertEqual(rx, expected)
@@ -228,10 +228,10 @@ class TestPNAT(VppTestCase):
                 binding_index=rv.binding_index,
             )
 
-        rv, l = self.vapi.pnat_bindings_get()
+        l = list(self.vapi.vpp.details_iter(self.vapi.pnat_bindings_get))
         self.assertEqual(len(l), len(tests))
 
-        rv, l = self.vapi.pnat_interfaces_get()
+        l = list(self.vapi.vpp.details_iter(self.vapi.pnat_interfaces_get))
         self.assertEqual(len(l), 2)
 
         self.logger.info(self.vapi.cli("show pnat translations"))

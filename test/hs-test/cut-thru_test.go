@@ -11,10 +11,10 @@ import (
 )
 
 func init() {
-	RegisterNoTopoTests(BuiltinEchoVclClientCutThruTest, RedisCutThruTest,
+	RegisterNoTopoTests(BuiltinVperfVclClientCutThruTest, RedisCutThruTest,
 		LdpIperfTcpCutThruTest, LdpIperfUdpCutThruTest)
 	RegisterNoTopoMWTests(RedisCutThruMWTest, LdpIperfTcpCutThruMWTest, LdpIperfUdpCutThruMWTest,
-		BuiltinEchoVclClientCutThruMWTest)
+		BuiltinVperfVclClientCutThruMWTest)
 	RegisterVppProxyTests(LdpWgetVppProxyNginxCutThruTest, LdpWgetVppProxyNginxCutThruSmallFifoTest)
 }
 
@@ -22,15 +22,15 @@ func RedisCutThruTest(s *NoTopoSuite) {
 	redisCutThru(s)
 }
 
-func BuiltinEchoVclClientCutThruTest(s *NoTopoSuite) {
-	builtinEchoVclClientCutThru(s)
+func BuiltinVperfVclClientCutThruTest(s *NoTopoSuite) {
+	builtinVperfVclClientCutThru(s)
 }
 
-func BuiltinEchoVclClientCutThruMWTest(s *NoTopoSuite) {
+func BuiltinVperfVclClientCutThruMWTest(s *NoTopoSuite) {
 	s.CpusPerVppContainer = 3
 	s.CpusPerContainer = 3
 	s.SetupTest()
-	builtinEchoVclClientCutThru(s)
+	builtinVperfVclClientCutThru(s)
 }
 
 func createSmallFifoVclConfig(container *Container) {
@@ -59,7 +59,7 @@ func removeStaleWorkDirVolumes(container *Container, containerWorkDir string) {
 	}
 }
 
-func builtinEchoVclClientCutThru(s *NoTopoSuite) {
+func builtinVperfVclClientCutThru(s *NoTopoSuite) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -134,7 +134,7 @@ func redisCutThru(s *NoTopoSuite) {
 
 	serverAddress := s.Interfaces.Tap.Ip4AddressString()
 	cmd := fmt.Sprintf("redis-server --daemonize yes --protected-mode no --save \"\" --bind %s --loglevel notice --logfile %s",
-		serverAddress, RedisServerLogFileName(s.Containers.Vpp))
+		serverAddress, RedisServerLogFileName(s.Containers.ServerApp))
 	o, err := s.Containers.ServerApp.Exec(true, cmd)
 	AssertNil(err)
 
@@ -157,20 +157,20 @@ func redisCutThru(s *NoTopoSuite) {
 }
 
 func LdpIperfTcpCutThruTest(s *NoTopoSuite) {
-	AssertGreaterEqualUnlessCoverageBuild(ldPreloadIperfCutThru(s, ""), 100, "Iperf bitrate below threshold")
+	AssertGreaterEqualUnlessASanOrCovBuild(ldPreloadIperfCutThru(s, ""), 100, "Iperf bitrate below threshold")
 }
 
 func LdpIperfTcpCutThruMWTest(s *NoTopoSuite) {
 	s.CpusPerVppContainer = 3
 	s.CpusPerContainer = 3
 	s.SetupTest()
-	AssertGreaterEqualUnlessCoverageBuild(ldPreloadIperfCutThru(s, ""), 100, "Iperf bitrate below threshold")
+	AssertGreaterEqualUnlessASanOrCovBuild(ldPreloadIperfCutThru(s, ""), 100, "Iperf bitrate below threshold")
 }
 
 // hangs
 func LdpIperfUdpCutThruTest(s *NoTopoSuite) {
 	s.Skip("Broken")
-	AssertGreaterEqualUnlessCoverageBuild(ldPreloadIperfCutThru(s, "-u -b 10g"), 100, "Iperf bitrate below threshold")
+	AssertGreaterEqualUnlessASanOrCovBuild(ldPreloadIperfCutThru(s, "-u -b 10g"), 100, "Iperf bitrate below threshold")
 }
 
 // hangs
@@ -178,7 +178,7 @@ func LdpIperfUdpCutThruMWTest(s *NoTopoSuite) {
 	s.Skip("Broken")
 	s.CpusPerVppContainer = 3
 	s.SetupTest()
-	AssertGreaterEqualUnlessCoverageBuild(ldPreloadIperfCutThru(s, "-u -b 10g"), 100, "Iperf bitrate below threshold")
+	AssertGreaterEqualUnlessASanOrCovBuild(ldPreloadIperfCutThru(s, "-u -b 10g"), 100, "Iperf bitrate below threshold")
 }
 
 func LdpWgetVppProxyNginxCutThruTest(s *VppProxySuite) {

@@ -592,6 +592,9 @@ list(APPEND VNET_SOURCES
   tcp/tcp_cli.c
   tcp/tcp_cubic.c
   tcp/tcp_debug.c
+  tcp/tcp_rack.c
+  tcp/tcp_tlp.c
+  tcp/tcp_bbr.c
   tcp/tcp_sack.c
   tcp/tcp_timer.c
   tcp/tcp.c
@@ -611,6 +614,9 @@ list(APPEND VNET_HEADERS
   tcp/tcp_debug.h
   tcp/tcp_inlines.h
   tcp/tcp_loss.h
+  tcp/tcp_rack.h
+  tcp/tcp_tlp.h
+  tcp/tcp_bbr.h
   tcp/tcp_sack.h
   tcp/tcp_sdl.h
   tcp/tcp_types.h
@@ -1416,14 +1422,22 @@ list (APPEND VNET_MULTIARCH_SOURCES
 # VNET Library
 ##############################################################################
 
+set(_vnet_library_visibility)
+if(VPP_LIBVNET_HIDDEN_VISIBILITY)
+  set(_vnet_library_visibility HIDDEN)
+endif()
+
 add_vpp_library(vnet
+  ${_vnet_library_visibility}
   SOURCES ${VNET_SOURCES}
   MULTIARCH_SOURCES ${VNET_MULTIARCH_SOURCES}
+  COMPILE_DEFINITIONS BIHASH_TEMPLATE_API=__clib_export
   INSTALL_HEADERS ${VNET_HEADERS}
   API_FILES ${VNET_API_FILES}
   LINK_LIBRARIES vppinfra svm vlibapi vlibmemory vlib
   DEPENDS vpp_version_h api_headers
 )
+unset(_vnet_library_visibility)
 
 ##############################################################################
 # vpp api test client library

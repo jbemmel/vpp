@@ -96,12 +96,12 @@ W_cubic (cubic_data_t * cd, f64 t)
  * RFC 8312 Eq. 2
  */
 static inline f64
-K_cubic (cubic_data_t * cd, u32 wnd)
+K_cubic (cubic_data_t *cd, f64 wnd)
 {
   /* K = cubic_root(W_max*(1-beta_cubic)/C)
    * Because the current window may be less than W_max * beta_cubic because
-   * of fast convergence, we pass it as parameter */
-  return pow ((f64) (cd->w_max - wnd) / cubic_c, 1 / 3.0);
+   * of fast convergence, we pass it as parameter, in unrounded segments */
+  return pow (clib_max (cd->w_max - wnd, 0.0) / cubic_c, 1 / 3.0);
 }
 
 /**
@@ -109,13 +109,15 @@ K_cubic (cubic_data_t * cd, u32 wnd)
  *
  * Estimates the window size of AIMD(alpha_aimd, beta_aimd) for
  * alpha_aimd=3*(1-beta_cubic)/(1+beta_cubic) and beta_aimd=beta_cubic.
- * Time (t) and rtt should be provided in seconds
+ * Time (t) and rtt should be provided in seconds. As per RFC 9438 Sec. 4.3, the estimate starts
+ * from cwnd_epoch, i.e., W_cubic(0).
  */
 static inline u32
 W_est (cubic_data_t * cd, f64 t, f64 rtt)
 {
-  /* W_est(t) = W_max*beta_cubic+[3*(1-beta_cubic)/(1+beta_cubic)]*(t/RTT) */
-  return cd->w_max * beta_cubic + west_const * (t / rtt);
+  /* W_est(t) = cwnd_epoch+[3*(1-beta_cubic)/(1+beta_cubic)]*(t/RTT), with
+   * cwnd_epoch = W_cubic(0) = W_max-C*K^3, unrounded */
+  return cd->w_max - cubic_c * cd->K * cd->K * cd->K + west_const * (t / rtt);
 }
 
 static void
@@ -156,9 +158,13 @@ static void
 cubic_recovered (tcp_connection_t * tc)
 {
   cubic_data_t *cd = (cubic_data_t *) tcp_cc_data (tc);
+
+  if (tcp_in_recovery (tc))
+    return;
+
   cd->t_start = cubic_time (tc->c_thread_index);
   tc->cwnd = tc->ssthresh;
-  cd->K = K_cubic (cd, tc->cwnd / tc->snd_mss);
+  cd->K = K_cubic (cd, (f64) tc->cwnd / tc->snd_mss);
 }
 
 /* Spurious retransmit detected: the cc layer has already restored
@@ -168,7 +174,7 @@ static void
 cubic_undo_recovery (tcp_connection_t *tc)
 {
   cubic_data_t *cd = (cubic_data_t *) tcp_cc_data (tc);
-  u32 wnd = tc->cwnd / tc->snd_mss;
+  f64 wnd = (f64) tc->cwnd / tc->snd_mss;
 
   cd->w_max = cd->prev_w_max;
   cd->t_start = cubic_time (tc->c_thread_index);
@@ -258,8 +264,8 @@ cubic_rcv_ack (tcp_connection_t *tc, tcp_ack_ctx_t *ac)
     }
 }
 
-static void
-cubic_conn_init (tcp_connection_t * tc)
+static int
+cubic_conn_init (tcp_connection_t *tc)
 {
   cubic_data_t *cd = (cubic_data_t *) tcp_cc_data (tc);
   tc->ssthresh = cubic_cfg.ssthresh;
@@ -268,6 +274,7 @@ cubic_conn_init (tcp_connection_t * tc)
   cd->prev_w_max = 0;
   cd->K = 0;
   cd->t_start = cubic_time (tc->c_thread_index);
+  return 0;
 }
 
 static uword
@@ -326,6 +333,16 @@ cubic_event (tcp_connection_t *tc, tcp_cc_event_t evt)
     cd->t_start = clib_min (cd->t_start + idle, now);
 }
 
+static u64
+cubic_get_pacing_rate (tcp_connection_t *tc)
+{
+  /* Add headroom in early slow start, then reduce the pacing gain as cwnd
+   * approaches ssthresh. */
+  f64 gain = tc->cwnd < tc->ssthresh / 2 ? 2.0 : 1.0;
+
+  return tcp_cc_window_pacing_rate (tc, gain);
+}
+
 const static tcp_cc_algorithm_t tcp_cubic = {
   .name = "cubic",
   .unformat_cfg = cubic_unformat_config,
@@ -337,6 +354,7 @@ const static tcp_cc_algorithm_t tcp_cubic = {
   .rcv_cong_ack = newreno_rcv_cong_ack,
   .event = cubic_event,
   .init = cubic_conn_init,
+  .get_pacing_rate = cubic_get_pacing_rate,
 };
 
 clib_error_t *

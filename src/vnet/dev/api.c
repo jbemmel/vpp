@@ -129,7 +129,10 @@ done:
     bus->ops.free_device_info (vm, bus_dev_info);
 
   if (rv != VNET_DEV_OK && dev)
-    vnet_dev_process_call_op_no_rv (vm, dev, vnet_dev_free);
+    {
+      vnet_dev_process_quit (vm, dev);
+      vnet_dev_free (vm, dev);
+    }
   else if (dev)
     args->dev_index = dev->index;
 
@@ -226,11 +229,14 @@ vnet_dev_api_create_port_if (vlib_main_t *vm,
     case VNET_DEV_RX_QUEUE_ASSIGNMENT_ROUND_ROBIN:
       break;
     case VNET_DEV_RX_QUEUE_ASSIGNMENT_QUEUE_PER_THREAD:
-      if (args->num_rx_queues)
+      if (args->num_rx_queues > n_threads)
 	return VNET_DEV_ERR_INVALID_NUM_RX_QUEUES;
-      if (args->num_tx_queues)
+      if (args->num_tx_queues > n_threads)
 	return VNET_DEV_ERR_INVALID_NUM_TX_QUEUES;
-      args->num_rx_queues = args->num_tx_queues = n_threads;
+      if (args->num_rx_queues == 0)
+	args->num_rx_queues = n_threads;
+      if (args->num_tx_queues == 0)
+	args->num_tx_queues = n_threads;
       break;
     case VNET_DEV_RX_QUEUE_ASSIGNMENT_MAIN_THREAD_ONLY:
       if (args->num_rx_queues && args->num_rx_queues != 1)

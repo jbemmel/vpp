@@ -623,6 +623,7 @@ libmemif
 libmemifs
 libsrtp
 libvirt
+libvnet
 libvppapiclient
 lifecycle
 ligato
@@ -709,6 +710,7 @@ mif
 mIn
 mispositions
 misprograms
+MITRE
 mk
 mldv
 mmap
@@ -1262,6 +1264,7 @@ unrouteable
 unserialization
 unserialize
 unserializing
+unstripped
 untagged
 untaint
 unthrottle
