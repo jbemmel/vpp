@@ -72,6 +72,7 @@ add_vpp_plugin(linux_nl
   SOURCES
   lcp_router.c
   lcp_nl.c
+  lcp_srv6_sync.c
 
   LINK_LIBRARIES
   lcp

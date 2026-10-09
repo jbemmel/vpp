@@ -28,6 +28,8 @@
 #include <libmnl/libmnl.h>
 
 #include <plugins/linux-cp/lcp_interface.h>
+#include <linux-cp/lcp_srv6_sync.h>
+#include <netlink/errno.h>
 
 typedef enum nl_status_t_
 {
@@ -189,23 +191,42 @@ static void lcp_nl_close_sync_socket (nl_sock_type_t sock_type);
 static void
 nl_route_del (struct rtnl_route *rr, void *arg)
 {
-  FOREACH_VFT (nvl_rt_route_del, rr);
+  struct nl_msg *msg = NULL;
+
+  if (arg)
+    msg = ((nl_msg_info_t *) arg)->msg;
+
+  FOREACH_VFT_CTX (nvl_rt_route_del, rr, msg);
 }
 
 static void
 nl_route_add (struct rtnl_route *rr, void *arg)
 {
-  int is_replace = 0;
+  nl_rt_route_ctx_t ctx = { .is_replace = 0, .msg = NULL };
 
   if (arg)
     {
       nl_msg_info_t *msg_info = (nl_msg_info_t *) arg;
       struct nlmsghdr *nlh = nlmsg_hdr (msg_info->msg);
 
-      is_replace = (nlh->nlmsg_flags & NLM_F_REPLACE);
+      ctx.msg = msg_info->msg;
+      ctx.is_replace = (nlh->nlmsg_flags & NLM_F_REPLACE);
     }
 
-  FOREACH_VFT_CTX (nvl_rt_route_add, rr, is_replace);
+  FOREACH_VFT_CTX (nvl_rt_route_add, rr, &ctx);
+}
+
+static void
+lcp_nl_handle_parse_error (struct nl_msg *msg, int err)
+{
+  if (err == -NLE_MSGTYPE_NOSUPPORT &&
+      lcp_srv6_route_handle_parse_error (msg))
+    {
+      NL_DBG ("Handled SRv6 route after libnl parse error");
+      return;
+    }
+
+  NL_ERROR ("Unable to parse object: %s", nl_geterror (err));
 }
 
 static void
@@ -345,7 +366,7 @@ nl_route_process_msgs (void)
     {
       if ((err = nl_msg_parse (msg_info->msg, nl_route_dispatch, msg_info)) <
 	  0)
-	NL_ERROR ("Unable to parse object: %s", nl_geterror (err));
+	lcp_nl_handle_parse_error (msg_info->msg, err);
       nlmsg_free (msg_info->msg);
       if (++n_msgs >= nm->batch_size)
 	break;
@@ -413,9 +434,10 @@ static int
 lcp_nl_route_dump_cb (struct nl_msg *msg, void *arg)
 {
   int err;
+  nl_msg_info_t msg_info = { .msg = msg, .ts = 0 };
 
-  if ((err = nl_msg_parse (msg, nl_route_dispatch, NULL)) < 0)
-    NL_ERROR ("Unable to parse object: %s", nl_geterror (err));
+  if ((err = nl_msg_parse (msg, nl_route_dispatch, &msg_info)) < 0)
+    lcp_nl_handle_parse_error (msg, err);
 
   return NL_OK;
 }

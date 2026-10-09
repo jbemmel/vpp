@@ -10,6 +10,7 @@
 #include <vlib/unix/plugin.h>
 #include <linux-cp/lcp_nl.h>
 #include <linux-cp/lcp_interface.h>
+#include <linux-cp/lcp_srv6_sync.h>
 
 #include <netlink/msg.h>
 #include <netlink/netlink.h>
@@ -1262,7 +1263,7 @@ lcp_router_route_mk_entry_flags (uint8_t rtype, int table_id, uint8_t rproto)
 }
 
 static void
-lcp_router_route_del (struct rtnl_route *rr)
+lcp_router_route_del (struct rtnl_route *rr, struct nl_msg *msg)
 {
   fib_entry_flag_t entry_flags;
   uint32_t table_id;
@@ -1276,6 +1277,10 @@ lcp_router_route_del (struct rtnl_route *rr)
 
   /* skip unsupported route types and local table */
   if (!lcp_router_route_type_valid[rtype] || (table_id == 255))
+    return;
+
+  /* SRv6 SEG6/SEG6_LOCAL routes are owned by the SRv6 sync path */
+  if (lcp_srv6_route_try_del (rr, msg))
     return;
 
   lcp_router_route_mk_prefix (rr, &pfx);
@@ -1356,13 +1361,15 @@ lcp_router_fib_route_path_dup (fib_route_path_t *old)
 }
 
 static void
-lcp_router_route_add (struct rtnl_route *rr, int is_replace)
+lcp_router_route_add (struct rtnl_route *rr, nl_rt_route_ctx_t *ctx)
 {
   fib_entry_flag_t entry_flags;
   uint32_t table_id;
   fib_prefix_t pfx;
   lcp_router_table_t *nlt;
   uint8_t rtype, rproto;
+  int is_replace = ctx ? ctx->is_replace : 0;
+  struct nl_msg *msg = ctx ? ctx->msg : NULL;
 
   rtype = rtnl_route_get_type (rr);
   table_id = rtnl_route_get_table (rr);
@@ -1370,6 +1377,10 @@ lcp_router_route_add (struct rtnl_route *rr, int is_replace)
 
   /* skip unsupported route types and local table */
   if (!lcp_router_route_type_valid[rtype] || (table_id == 255))
+    return;
+
+  /* SRv6 SEG6/SEG6_LOCAL routes are owned by the SRv6 sync path */
+  if (lcp_srv6_route_try_add (rr, msg, is_replace))
     return;
 
   lcp_router_route_mk_prefix (rr, &pfx);

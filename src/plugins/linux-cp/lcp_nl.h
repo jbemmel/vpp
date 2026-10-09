@@ -16,8 +16,19 @@ typedef void (*nl_rt_addr_cb_t) (struct rtnl_addr *ra);
 typedef void (*nl_rt_addr_sync_cb_t) (void);
 typedef void (*nl_rt_neigh_cb_t) (struct rtnl_neigh *rr);
 typedef void (*nl_rt_neigh_sync_cb_t) (void);
-typedef void (*nl_rt_route_add_cb_t) (struct rtnl_route *rn, int is_replace);
-typedef void (*nl_rt_route_del_cb_t) (struct rtnl_route *rn);
+/* Route callbacks receive the raw nl_msg so plugins can parse RTA_ENCAP
+ * types that libnl does not decode (e.g. SEG6 / SEG6_LOCAL).
+ */
+typedef struct nl_rt_route_ctx_t_
+{
+  int is_replace;
+  struct nl_msg *msg;
+} nl_rt_route_ctx_t;
+
+typedef void (*nl_rt_route_add_cb_t) (struct rtnl_route *rn,
+				     nl_rt_route_ctx_t *ctx);
+typedef void (*nl_rt_route_del_cb_t) (struct rtnl_route *rn,
+				     struct nl_msg *msg);
 typedef void (*nl_rt_route_sync_cb_t) (void);
 
 #define NL_RT_COMMON uword is_mp_safe

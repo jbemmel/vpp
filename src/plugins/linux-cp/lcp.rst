@@ -86,6 +86,22 @@ received (i.e. with the L2 rewrite) but post any translations that
 input features may have made.
 
 
+SRv6 route sync
+^^^^^^^^^^^^^^^
+
+When a control plane (e.g. FRR) installs SRv6 state in the Linux kernel as
+lightweight tunnels, ``linux_nl`` programs the equivalent VPP dataplane:
+
+* ``LWTUNNEL_ENCAP_SEG6_LOCAL`` with action End.DT4 / End.DT6 →
+  ``sr localsid ... behavior end.dt4|end.dt6 <table>``
+* ``LWTUNNEL_ENCAP_SEG6`` mode ``encap`` → a local BSID policy
+  (ULA ``fd00:ffff:1::/96``) plus ``sr steer l3 <prefix> via bsid``
+
+Netlink attributes are parsed from the raw message (libnl has no SEG6 encap
+ops). Linux VRF / table ids are mapped like other LCP routes (254/255 → 0).
+Deletes and replaces remove or update the matching localsid / steer / policy.
+Not yet synced: End/uN flavors, End.X/uA, H.Insert, L2encap.
+
 Recommendations
 ^^^^^^^^^^^^^^^
 

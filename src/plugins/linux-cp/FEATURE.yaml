@@ -22,6 +22,9 @@ description: |-
         untouched.
         The "linux_nl" plugin listens to netlink messages and synchronizes the IP
         configuration of the paired interfaces.
+        SRv6 lwtunnel routes installed by the control plane (SEG6_LOCAL End.DT4/DT6
+        and SEG6 H.Encaps) are translated into VPP localsids, SR policies and
+        L3 steering entries.
 
 state: experimental
 properties: [API, CLI, MULTITHREAD]
