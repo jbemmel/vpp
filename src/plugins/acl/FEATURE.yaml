@@ -6,6 +6,11 @@ features:
       - filter the source IP:MAC address statically configured bindings
   - Stateless inbound and outbound ACLs:
       - permit/deny packets based on their L3/L4 info
+  - Stateless ingress mitigation using native ACL lookup contexts:
+      - dual-stack prefix, protocol, port, ICMP and TCP flag matching
+      - IP length, DSCP, fragment flags and either-port matching
+      - ordered atomic rule batches and routed/bridged interface binding
+      - pre-action Linux psample export and packet/byte/rate telemetry
   - Stateful inbound and outbound ACLs:
       - create inbound sessions based on outbound traffic and vice versa
 

@@ -8,6 +8,7 @@
 #include <vnet/vnet.h>
 #include <vnet/plugin/plugin.h>
 #include <acl/acl.h>
+#include <acl/mitigation.h>
 
 #include <vnet/l2/l2_classify.h>
 #include <vnet/l2/l2_in_out_feat_arc.h>
@@ -300,19 +301,57 @@ acl_api_invalid_prefix (const vl_api_prefix_t * prefix)
   return (!valid_af) || ip_prefix_decode2 (prefix, &ip_prefix);
 }
 
+/* Takes ownership of rules on success; callers synchronize with workers. */
+int
+acl_replace_rule_vector (acl_rule_t *acl_new_rules, u32 *acl_list_index, u8 *tag)
+{
+  acl_main_t *am = &acl_main;
+  acl_list_t *a;
+  size_t tag_len = clib_strnlen ((const char *) tag, sizeof (a->tag));
+  if (tag_len == sizeof (a->tag))
+    return VNET_API_ERROR_INVALID_VALUE;
+  if (*acl_list_index != ~0 && pool_is_free_index (am->acls, *acl_list_index))
+    return VNET_API_ERROR_NO_SUCH_ENTRY;
+  if (~0 == *acl_list_index)
+    {
+      /* Get ACL index */
+      pool_get_aligned (am->acls, a, CLIB_CACHE_LINE_BYTES);
+      clib_memset (a, 0, sizeof (*a));
+      /* Will return the newly allocated ACL index */
+      *acl_list_index = a - am->acls;
+    }
+  else
+    {
+      a = am->acls + *acl_list_index;
+      /* Get rid of the old rules */
+      if (a->rules)
+	vec_free (a->rules);
+    }
+  a->rules = acl_new_rules;
+  memcpy (a->tag, tag, tag_len + 1);
+  if (am->trace_acl > 255)
+    warning_acl_print_acl (am->vlib_main, am, *acl_list_index);
+  if (am->reclassify_sessions)
+    {
+      /* a change in an ACLs if they are applied may mean a new policy epoch */
+      policy_notify_acl_change (am, *acl_list_index);
+    }
+  validate_and_reset_acl_counters (am, *acl_list_index);
+  acl_plugin_lookup_context_notify_acl_change (*acl_list_index);
+  return 0;
+}
 static int
 acl_add_list (u32 count, vl_api_acl_rule_t rules[],
 	      u32 * acl_list_index, u8 * tag)
 {
   acl_main_t *am = &acl_main;
-  acl_list_t *a;
   acl_rule_t *r;
   acl_rule_t *acl_new_rules = 0;
   size_t tag_len;
   int i;
 
-  tag_len = clib_strnlen ((const char *) tag, sizeof (a->tag));
-  if (tag_len == sizeof (a->tag))
+  tag_len = clib_strnlen ((const char *) tag, 64);
+  if (tag_len == 64)
     return VNET_API_ERROR_INVALID_VALUE;
 
   if (am->trace_acl > 255)
@@ -355,6 +394,9 @@ acl_add_list (u32 count, vl_api_acl_rule_t rules[],
 	 *acl_list_index, tag);
     }
 
+  if (*acl_list_index != ~0 && am->acls[*acl_list_index].is_mitigation)
+    return VNET_API_ERROR_INVALID_VALUE;
+
   /* Create and populate the rules */
   if (count > 0)
     vec_validate (acl_new_rules, count - 1);
@@ -378,33 +420,7 @@ acl_add_list (u32 count, vl_api_acl_rule_t rules[],
       r->tcp_flags_mask = rules[i].tcp_flags_mask;
     }
 
-  if (~0 == *acl_list_index)
-    {
-      /* Get ACL index */
-      pool_get_aligned (am->acls, a, CLIB_CACHE_LINE_BYTES);
-      clib_memset (a, 0, sizeof (*a));
-      /* Will return the newly allocated ACL index */
-      *acl_list_index = a - am->acls;
-    }
-  else
-    {
-      a = am->acls + *acl_list_index;
-      /* Get rid of the old rules */
-      if (a->rules)
-	vec_free (a->rules);
-    }
-  a->rules = acl_new_rules;
-  memcpy (a->tag, tag, tag_len + 1);
-  if (am->trace_acl > 255)
-    warning_acl_print_acl (am->vlib_main, am, *acl_list_index);
-  if (am->reclassify_sessions)
-    {
-      /* a change in an ACLs if they are applied may mean a new policy epoch */
-      policy_notify_acl_change (am, *acl_list_index);
-    }
-  validate_and_reset_acl_counters (am, *acl_list_index);
-  acl_plugin_lookup_context_notify_acl_change (*acl_list_index);
-  return 0;
+  return acl_replace_rule_vector (acl_new_rules, acl_list_index, tag);
 }
 
 static int
@@ -437,6 +453,8 @@ acl_del_list (u32 acl_list_index)
   /* lookup contexts cover other cases, not just inbound/outbound, so check that */
   if (acl_is_used_by (acl_list_index, am->lc_index_vec_by_acl))
     return VNET_API_ERROR_ACL_IN_USE_BY_LOOKUP_CONTEXT;
+
+  acl_mitigation_acl_deleted (acl_list_index);
 
   /* now we can delete the ACL itself */
   a = pool_elt_at_index (am->acls, acl_list_index);
@@ -639,6 +657,11 @@ acl_interface_set_inout_acl_list (acl_main_t * am, u32 sw_if_index,
 	/* ACL being applied twice within the list. error. */
 	clib_warning ("ERROR: ACL %d being applied twice", *pacln);
 	rv = VNET_API_ERROR_ENTRY_ALREADY_EXISTS;
+	goto done;
+      }
+    if (am->acls[*pacln].is_mitigation)
+      {
+	rv = VNET_API_ERROR_INVALID_VALUE;
 	goto done;
       }
     seen_acl_bitmap = clib_bitmap_set (seen_acl_bitmap, *pacln, 1);
@@ -1870,6 +1893,9 @@ static void
 	      rv = VNET_API_ERROR_NO_SUCH_ENTRY;
 	    }
 	}
+      for (i = 0; i < mp->count && !rv; i++)
+	if (am->acls[ntohl (mp->acls[i])].is_mitigation)
+	  rv = VNET_API_ERROR_INVALID_VALUE;
       if (0 == rv)
 	{
 	  u32 *in_acl_vec = 0;

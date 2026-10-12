@@ -276,10 +276,61 @@ fa_acl_match_port (u16 port, u16 port_first, u16 port_last, int is_ip6)
   return ((port >= port_first) && (port <= port_last));
 }
 
+/* All residual predicates must be checked before selecting a winner. */
 always_inline int
-single_acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tuple,
-		  int is_ip6, u8 * r_action, u32 * r_acl_match_p,
-		  u32 * r_rule_match_p, u32 * trace_bitmap)
+acl_mitigation_match_packet (const acl_rule_t *r, const fa_5tuple_t *p,
+			     const acl_mitigation_packet_t *metadata)
+{
+  const acl_mitigation_match_t *m = &r->mitigation;
+  u32 f = m->flags;
+  if (!metadata)
+    return 0; /* Legacy consumers cannot evaluate mitigation predicates. */
+  if ((f & ACL_MITIGATION_PROTO) && r->proto != p->l4.proto)
+    return 0;
+  if (f & (ACL_MITIGATION_SRC_PORT | ACL_MITIGATION_DST_PORT | ACL_MITIGATION_EITHER_PORT))
+    {
+      if (!p->pkt.l4_valid || p->pkt.is_nonfirst_fragment ||
+	  (p->l4.proto != IP_PROTOCOL_TCP && p->l4.proto != IP_PROTOCOL_UDP))
+	return 0;
+      u16 src = p->l4.port[0], dst = p->l4.port[1];
+      if ((f & ACL_MITIGATION_SRC_PORT) && (src < m->src_port_first || src > m->src_port_last))
+	return 0;
+      if ((f & ACL_MITIGATION_DST_PORT) && (dst < m->dst_port_first || dst > m->dst_port_last))
+	return 0;
+      if ((f & ACL_MITIGATION_EITHER_PORT) &&
+	  !((src >= m->either_port_first && src <= m->either_port_last) ||
+	    (dst >= m->either_port_first && dst <= m->either_port_last)))
+	return 0;
+    }
+  if (f & (ACL_MITIGATION_ICMP_TYPE | ACL_MITIGATION_ICMP_CODE))
+    {
+      if (!p->pkt.l4_valid || p->pkt.is_nonfirst_fragment ||
+	  p->l4.proto != (p->pkt.is_ip6 ? IP_PROTOCOL_ICMP6 : IP_PROTOCOL_ICMP))
+	return 0;
+      if ((f & ACL_MITIGATION_ICMP_TYPE) && p->l4.port[0] != m->icmp_type)
+	return 0;
+      if ((f & ACL_MITIGATION_ICMP_CODE) && p->l4.port[1] != m->icmp_code)
+	return 0;
+    }
+  if ((f & ACL_MITIGATION_TCP_FLAGS) &&
+      (p->l4.proto != IP_PROTOCOL_TCP || !p->pkt.tcp_flags_valid ||
+       (p->pkt.tcp_flags & m->tcp_flags_mask) != m->tcp_flags_value))
+    return 0;
+  if ((f & ACL_MITIGATION_PACKET_LENGTH) && (metadata->packet_length < m->packet_length_first ||
+					     metadata->packet_length > m->packet_length_last))
+    return 0;
+  if ((f & ACL_MITIGATION_DSCP) && metadata->dscp != m->dscp)
+    return 0;
+  if ((f & ACL_MITIGATION_FRAGMENT) &&
+      (metadata->fragment_flags & m->fragment_mask) != m->fragment_value)
+    return 0;
+  return 1;
+}
+
+always_inline int
+single_acl_match_5tuple_extended (acl_main_t *am, u32 acl_index, fa_5tuple_t *pkt_5tuple,
+				  int is_ip6, u8 *r_action, u32 *r_acl_match_p, u32 *r_rule_match_p,
+				  u32 *trace_bitmap, const acl_mitigation_packet_t *metadata)
 {
   int i;
   acl_rule_t *r;
@@ -317,6 +368,18 @@ single_acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tupl
 	  (&pkt_5tuple->ip4_addr[0], &r->src.ip4, r->src_prefixlen))
 	continue;
       }
+
+      if (PREDICT_FALSE (r->is_mitigation))
+	{
+	  if (!acl_mitigation_match_packet (r, pkt_5tuple, metadata))
+	    continue;
+	  *r_action = r->is_permit;
+	  if (r_acl_match_p)
+	    *r_acl_match_p = acl_index;
+	  if (r_rule_match_p)
+	    *r_rule_match_p = i;
+	  return 1;
+	}
 
       if (r->proto)
 	{
@@ -390,6 +453,14 @@ single_acl_match_5tuple (acl_main_t * am, u32 acl_index, fa_5tuple_t * pkt_5tupl
 }
 
 always_inline int
+single_acl_match_5tuple (acl_main_t *am, u32 acl_index, fa_5tuple_t *pkt_5tuple, int is_ip6,
+			 u8 *r_action, u32 *r_acl_match_p, u32 *r_rule_match_p, u32 *trace_bitmap)
+{
+  return single_acl_match_5tuple_extended (am, acl_index, pkt_5tuple, is_ip6, r_action,
+					   r_acl_match_p, r_rule_match_p, trace_bitmap, 0);
+}
+
+always_inline int
 acl_plugin_single_acl_match_5tuple (void *p_acl_main, u32 acl_index, fa_5tuple_t * pkt_5tuple,
 		  int is_ip6, u8 * r_action, u32 * r_acl_match_p,
 		  u32 * r_rule_match_p, u32 * trace_bitmap)
@@ -400,9 +471,10 @@ acl_plugin_single_acl_match_5tuple (void *p_acl_main, u32 acl_index, fa_5tuple_t
 }
 
 always_inline int
-linear_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t * pkt_5tuple,
-		       int is_ip6, u8 *r_action, u32 *acl_pos_p, u32 * acl_match_p,
-		       u32 * rule_match_p, u32 * trace_bitmap)
+linear_multi_acl_match_5tuple_extended (void *p_acl_main, u32 lc_index, fa_5tuple_t *pkt_5tuple,
+					int is_ip6, u8 *r_action, u32 *acl_pos_p, u32 *acl_match_p,
+					u32 *rule_match_p, u32 *trace_bitmap,
+					const acl_mitigation_packet_t *metadata)
 {
   acl_main_t *am = p_acl_main;
   int i;
@@ -418,9 +490,8 @@ linear_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t * pkt
       clib_warning ("ACL_FA_NODE_DBG: Trying to match ACL: %d",
 		    acl_vector[i]);
 #endif
-      if (single_acl_match_5tuple
-	  (am, acl_vector[i], pkt_5tuple, is_ip6, &action,
-	   acl_match_p, rule_match_p, trace_bitmap))
+      if (single_acl_match_5tuple_extended (am, acl_vector[i], pkt_5tuple, is_ip6, &action,
+					    acl_match_p, rule_match_p, trace_bitmap, metadata))
 	{
 	  *r_action = action;
           *acl_pos_p = i;
@@ -438,7 +509,15 @@ linear_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t * pkt
   return 0;
 }
 
-
+always_inline int
+linear_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t *pkt_5tuple, int is_ip6,
+			       u8 *r_action, u32 *acl_pos_p, u32 *acl_match_p, u32 *rule_match_p,
+			       u32 *trace_bitmap)
+{
+  return linear_multi_acl_match_5tuple_extended (p_acl_main, lc_index, pkt_5tuple, is_ip6, r_action,
+						 acl_pos_p, acl_match_p, rule_match_p, trace_bitmap,
+						 0);
+}
 
 /*
  * This returns true if there is indeed a match on the portranges.
@@ -465,7 +544,8 @@ match_portranges(acl_main_t *am, fa_5tuple_t *match, u32 index)
 }
 
 always_inline int
-single_rule_match_5tuple (acl_rule_t * r, int is_ip6, fa_5tuple_t * pkt_5tuple)
+single_rule_match_5tuple_extended (acl_rule_t *r, int is_ip6, fa_5tuple_t *pkt_5tuple,
+				   const acl_mitigation_packet_t *metadata)
 {
   if (is_ip6 != r->is_ipv6)
     {
@@ -490,6 +570,9 @@ single_rule_match_5tuple (acl_rule_t * r, int is_ip6, fa_5tuple_t * pkt_5tuple)
 	  (&pkt_5tuple->ip4_addr[0], &r->src.ip4, r->src_prefixlen))
 	return 0;
     }
+
+  if (PREDICT_FALSE (r->is_mitigation))
+    return acl_mitigation_match_packet (r, pkt_5tuple, metadata);
 
   if (r->proto)
     {
@@ -521,8 +604,15 @@ single_rule_match_5tuple (acl_rule_t * r, int is_ip6, fa_5tuple_t * pkt_5tuple)
   return 1;
 }
 
+always_inline int
+single_rule_match_5tuple (acl_rule_t *r, int is_ip6, fa_5tuple_t *pkt_5tuple)
+{
+  return single_rule_match_5tuple_extended (r, is_ip6, pkt_5tuple, 0);
+}
+
 always_inline u32
-multi_acl_match_get_applied_ace_index (acl_main_t * am, int is_ip6, fa_5tuple_t * match)
+multi_acl_match_get_applied_ace_index_extended (acl_main_t *am, int is_ip6, fa_5tuple_t *match,
+						const acl_mitigation_packet_t *metadata)
 {
   clib_bihash_kv_48_8_t kv;
   clib_bihash_kv_48_8_t result;
@@ -606,7 +696,7 @@ multi_acl_match_get_applied_ace_index (acl_main_t * am, int is_ip6, fa_5tuple_t 
 		{
 		  continue;
 		}
-	      if (single_rule_match_5tuple (&crs[i].rule, is_ip6, match))
+	      if (single_rule_match_5tuple_extended (&crs[i].rule, is_ip6, match, metadata))
 		{
 		  curr_match_index = crs[i].applied_entry_index;
 		}
@@ -617,14 +707,22 @@ multi_acl_match_get_applied_ace_index (acl_main_t * am, int is_ip6, fa_5tuple_t 
   return curr_match_index;
 }
 
+always_inline u32
+multi_acl_match_get_applied_ace_index (acl_main_t *am, int is_ip6, fa_5tuple_t *match)
+{
+  return multi_acl_match_get_applied_ace_index_extended (am, is_ip6, match, 0);
+}
+
 always_inline int
-hash_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t * pkt_5tuple,
-                       int is_ip6, u8 *action, u32 *acl_pos_p, u32 * acl_match_p,
-                       u32 * rule_match_p, u32 * trace_bitmap)
+hash_multi_acl_match_5tuple_extended (void *p_acl_main, u32 lc_index, fa_5tuple_t *pkt_5tuple,
+				      int is_ip6, u8 *action, u32 *acl_pos_p, u32 *acl_match_p,
+				      u32 *rule_match_p, u32 *trace_bitmap,
+				      const acl_mitigation_packet_t *metadata)
 {
   acl_main_t *am = p_acl_main;
   applied_hash_ace_entry_t **applied_hash_aces = vec_elt_at_index(am->hash_entry_vec_by_lc_index, lc_index);
-  u32 match_index = multi_acl_match_get_applied_ace_index(am, is_ip6, pkt_5tuple);
+  u32 match_index =
+    multi_acl_match_get_applied_ace_index_extended (am, is_ip6, pkt_5tuple, metadata);
   if (match_index < vec_len((*applied_hash_aces))) {
     applied_hash_ace_entry_t *pae = vec_elt_at_index((*applied_hash_aces), match_index);
     pae->hitcount++;
@@ -637,16 +735,21 @@ hash_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t * pkt_5
   return 0;
 }
 
-
+always_inline int
+hash_multi_acl_match_5tuple (void *p_acl_main, u32 lc_index, fa_5tuple_t *pkt_5tuple, int is_ip6,
+			     u8 *action, u32 *acl_pos_p, u32 *acl_match_p, u32 *rule_match_p,
+			     u32 *trace_bitmap)
+{
+  return hash_multi_acl_match_5tuple_extended (p_acl_main, lc_index, pkt_5tuple, is_ip6, action,
+					       acl_pos_p, acl_match_p, rule_match_p, trace_bitmap,
+					       0);
+}
 
 always_inline int
-acl_plugin_match_5tuple_inline (void *p_acl_main, u32 lc_index,
-                                           fa_5tuple_opaque_t * pkt_5tuple,
-                                           int is_ip6, u8 * r_action,
-                                           u32 * r_acl_pos_p,
-                                           u32 * r_acl_match_p,
-                                           u32 * r_rule_match_p,
-                                           u32 * trace_bitmap)
+acl_plugin_match_5tuple_inline_extended (void *p_acl_main, u32 lc_index,
+					 fa_5tuple_opaque_t *pkt_5tuple, int is_ip6, u8 *r_action,
+					 u32 *r_acl_pos_p, u32 *r_acl_match_p, u32 *r_rule_match_p,
+					 u32 *trace_bitmap, const acl_mitigation_packet_t *metadata)
 {
   acl_main_t *am = p_acl_main;
   fa_5tuple_t * pkt_5tuple_internal = (fa_5tuple_t *)pkt_5tuple;
@@ -659,18 +762,30 @@ acl_plugin_match_5tuple_inline (void *p_acl_main, u32 lc_index,
        * proved more overhead than it's worth - so just fall back to linear
        * matching in that case.
        */
-      return linear_multi_acl_match_5tuple(p_acl_main, lc_index, pkt_5tuple_internal, is_ip6, r_action,
-                                 r_acl_pos_p, r_acl_match_p, r_rule_match_p, trace_bitmap);
+      return linear_multi_acl_match_5tuple_extended (p_acl_main, lc_index, pkt_5tuple_internal,
+						     is_ip6, r_action, r_acl_pos_p, r_acl_match_p,
+						     r_rule_match_p, trace_bitmap, metadata);
     } else {
-      return hash_multi_acl_match_5tuple(p_acl_main, lc_index, pkt_5tuple_internal, is_ip6, r_action,
-                                 r_acl_pos_p, r_acl_match_p, r_rule_match_p, trace_bitmap);
+	return hash_multi_acl_match_5tuple_extended (p_acl_main, lc_index, pkt_5tuple_internal,
+						     is_ip6, r_action, r_acl_pos_p, r_acl_match_p,
+						     r_rule_match_p, trace_bitmap, metadata);
     }
   } else {
-    return linear_multi_acl_match_5tuple(p_acl_main, lc_index, pkt_5tuple_internal, is_ip6, r_action,
-                                 r_acl_pos_p, r_acl_match_p, r_rule_match_p, trace_bitmap);
+      return linear_multi_acl_match_5tuple_extended (p_acl_main, lc_index, pkt_5tuple_internal,
+						     is_ip6, r_action, r_acl_pos_p, r_acl_match_p,
+						     r_rule_match_p, trace_bitmap, metadata);
   }
 }
 
+always_inline int
+acl_plugin_match_5tuple_inline (void *p_acl_main, u32 lc_index, fa_5tuple_opaque_t *pkt_5tuple,
+				int is_ip6, u8 *r_action, u32 *r_acl_pos_p, u32 *r_acl_match_p,
+				u32 *r_rule_match_p, u32 *trace_bitmap)
+{
+  return acl_plugin_match_5tuple_inline_extended (p_acl_main, lc_index, pkt_5tuple, is_ip6,
+						  r_action, r_acl_pos_p, r_acl_match_p,
+						  r_rule_match_p, trace_bitmap, 0);
+}
 
 always_inline int
 acl_plugin_match_5tuple_inline_and_count (void *p_acl_main, u32 lc_index,

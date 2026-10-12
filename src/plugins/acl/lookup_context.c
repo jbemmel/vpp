@@ -281,6 +281,16 @@ static void acl_plugin_fill_5tuple (u32 lc_index, vlib_buffer_t * b0, int is_ip6
   acl_plugin_fill_5tuple_inline(&acl_main, lc_index, b0, is_ip6, is_input, is_l2_path, p5tuple_pkt);
 }
 
+int
+acl_plugin_match_5tuple_extended (u32 lc_index, fa_5tuple_opaque_t *tuple, int is_ip6, u8 *action,
+				  u32 *acl_position, u32 *acl_index, u32 *rule_index,
+				  u32 *trace_bitmap, const acl_mitigation_packet_t *metadata)
+{
+  return acl_plugin_match_5tuple_inline_extended (&acl_main, lc_index, tuple, is_ip6, action,
+						  acl_position, acl_index, rule_index, trace_bitmap,
+						  metadata);
+}
+
 static int acl_plugin_match_5tuple (u32 lc_index,
                                            fa_5tuple_opaque_t * pkt_5tuple,
                                            int is_ip6, u8 * r_action,

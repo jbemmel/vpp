@@ -1,0 +1,158 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+option version = "1.0.0";
+import "vnet/interface_types.api";
+import "vnet/ip/ip_types.api";
+
+/** Component bits follow the FastACL match model; unset fields are ignored.
+ * family: 0 IPv4, 1 IPv6, 2 both (both requires no address components).
+ * action: 0 drop, 1 permit. sample_ratio: zero disables, otherwise every Nth
+ * matching packet per worker and logical rule is sampled before the action.
+ * order takes precedence over component-wise ordering; input index breaks ties.
+ */
+typedef acl_mitigation_rule
+{
+  u32 flags;
+  u32 order;
+  u8 family;
+  u8 action;
+  vl_api_prefix_t src_prefix;
+  vl_api_prefix_t dst_prefix;
+  u8 proto;
+  u16 src_port_first;
+  u16 src_port_last;
+  u16 dst_port_first;
+  u16 dst_port_last;
+  u16 either_port_first;
+  u16 either_port_last;
+  u8 icmp_type;
+  u8 icmp_code;
+  u8 tcp_flags_value;
+  u8 tcp_flags_mask;
+  u16 packet_length_first;
+  u16 packet_length_last;
+  u8 dscp;
+  u8 fragment_value;
+  u8 fragment_mask;
+  u32 sample_ratio;
+  u32 sample_group;
+};
+
+/** Atomic batch create/replace; validates all entries before publication.
+ * acl_index: ~0 creates a native ACL, otherwise replaces a mitigation ACL.
+ * Replacement resets counters and sampling credits. Delete with acl_del.
+ */
+define acl_mitigation_add_replace
+{
+  u32 client_index;
+  u32 context;
+  u32 acl_index;
+  string tag[64];
+  u32 count;
+  vl_api_acl_mitigation_rule_t r[count];
+};
+define acl_mitigation_add_replace_reply
+{
+  u32 context;
+  i32 retval;
+  u32 acl_index;
+};
+
+/** Attach a mitigation ACL to ingress on all four routed/bridged IP arcs.
+ * acl_index ~0 detaches. Unmatched packets continue to the remaining features.
+ */
+autoreply define acl_mitigation_interface_set
+{
+  u32 client_index;
+  u32 context;
+  vl_api_interface_index_t sw_if_index;
+  u32 acl_index;
+};
+
+/** Sampling is Linux psample; enabling requires the kernel family to exist.
+ * Per-rule counters are enabled by default; aggregate node counters always run.
+ */
+autoreply define acl_mitigation_config
+{
+  u32 client_index;
+  u32 context;
+  bool per_rule_counters;
+  bool psample_enable;
+};
+
+define acl_mitigation_dump
+{
+  u32 client_index;
+  u32 context;
+  u32 acl_index;
+};
+define acl_mitigation_details
+{
+  u32 context;
+  u32 acl_index;
+  u32 rule_index;
+  string tag[64];
+  vl_api_acl_mitigation_rule_t rule;
+  u64 packets;
+  u64 bytes;
+  u64 sampled;
+  u64 sample_failed;
+  f64 pps;
+  f64 l3_bps;
+  f64 l1_bps;
+};
+
+/** Rates are deltas between reads at least 0.5 seconds apart.
+ * L1 estimates assume untagged Ethernet and 38 bytes of framing overhead.
+ */
+define acl_mitigation_stats_get
+{
+  u32 client_index;
+  u32 context;
+};
+define acl_mitigation_stats_get_reply
+{
+  u32 context;
+  i32 retval;
+  u64 processed_packets;
+  u64 processed_bytes;
+  u64 dropped_packets;
+  u64 dropped_bytes;
+  f64 processed_pps;
+  f64 processed_l3_bps;
+  f64 processed_l1_bps;
+  f64 dropped_pps;
+  f64 dropped_l3_bps;
+  f64 dropped_l1_bps;
+};
+
+/** Add one logical rule or delete one input index. Deletion renumbers subsequent
+ * logical indices. Both operations publish a complete replacement atomically.
+ */
+define acl_mitigation_rule_add_del
+{
+  u32 client_index;
+  u32 context;
+  u32 acl_index;
+  bool is_add;
+  u32 rule_index;
+  vl_api_acl_mitigation_rule_t rule;
+};
+define acl_mitigation_rule_add_del_reply
+{
+  u32 context;
+  i32 retval;
+  u32 acl_index;
+  u32 rule_index;
+};
+
+define acl_mitigation_interface_dump
+{
+  u32 client_index;
+  u32 context;
+};
+define acl_mitigation_interface_details
+{
+  u32 context;
+  vl_api_interface_index_t sw_if_index;
+  u32 acl_index;
+};

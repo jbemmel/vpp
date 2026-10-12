@@ -37,6 +37,8 @@
 #define ACL_PLUGIN_HASH_LOOKUP_HASH_BUCKETS 65536
 #define ACL_PLUGIN_HASH_LOOKUP_HASH_MEMORY (2 << 25)
 
+int acl_replace_rule_vector (acl_rule_t *rules, u32 *acl_index, u8 *tag);
+
 extern vlib_node_registration_t acl_in_node;
 extern vlib_node_registration_t acl_out_node;
 
@@ -72,6 +74,7 @@ typedef struct
   CLIB_CACHE_LINE_ALIGN_MARK(cacheline0);
   u8 tag[64];
   acl_rule_t *rules;
+  u8 is_mitigation;
 } acl_list_t;
 
 typedef struct

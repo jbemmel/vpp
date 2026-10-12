@@ -16,17 +16,22 @@ add_vpp_plugin(acl
   acl.c
   hash_lookup.c
   lookup_context.c
+  mitigation.c
+  mitigation_node.c
+  mitigation_psample.c
   sess_mgmt_node.c
   dataplane_node.c
   dataplane_node_nonip.c
 
   MULTIARCH_SOURCES
+  mitigation_node.c
   dataplane_node.c
   dataplane_node_nonip.c
 
   API_FILES
   acl.api
   acl_types.api
+  mitigation.api
 
   API_TEST_SOURCES
   acl_test.c
@@ -38,6 +43,7 @@ add_vpp_plugin(acl
   fa_node.h
   public_inlines.h
   types.h
+  mitigation_packet.h
   hash_lookup_types.h
   lookup_context.h
   hash_lookup_private.h

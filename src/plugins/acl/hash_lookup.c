@@ -984,31 +984,41 @@ make_mask_and_match_from_rule(fa_5tuple_t *mask, acl_rule_t *r, hash_ace_info_t 
     hi->match.ip4_addr[1] = r->dst.ip4;
   }
 
-  if (r->proto != 0) {
-    mask->l4.proto = ~0; /* L4 proto needs to be matched */
-    hi->match.l4.proto = r->proto;
-
-    /* Calculate the src/dst port masks and make the src/dst port matches accordingly */
-    make_port_mask(&mask->l4.port[0], r->src_port_or_type_first, r->src_port_or_type_last);
-    hi->match.l4.port[0] = r->src_port_or_type_first & mask->l4.port[0];
-
-    make_port_mask(&mask->l4.port[1], r->dst_port_or_code_first, r->dst_port_or_code_last);
-    hi->match.l4.port[1] = r->dst_port_or_code_first & mask->l4.port[1];
-    /* L4 info must be valid in order to match */
-    mask->pkt.l4_valid = 1;
-    hi->match.pkt.l4_valid = 1;
-    /* And we must set the mask to check that it is an initial fragment */
-    mask->pkt.is_nonfirst_fragment = 1;
-    hi->match.pkt.is_nonfirst_fragment = 0;
-    if ((r->proto == IPPROTO_TCP) && (r->tcp_flags_mask != 0)) {
-      /* if we want to match on TCP flags, they must be masked off as well */
-      mask->pkt.tcp_flags = r->tcp_flags_mask;
-      hi->match.pkt.tcp_flags = r->tcp_flags_value;
-      /* and the flags need to be present within the packet being matched */
-      mask->pkt.tcp_flags_valid = 1;
-      hi->match.pkt.tcp_flags_valid = 1;
+  if (r->is_mitigation)
+    {
+      if (r->mitigation.flags & ACL_MITIGATION_PROTO)
+	{
+	  mask->l4.proto = ~0;
+	  hi->match.l4.proto = r->proto;
+	}
     }
-  }
+  else if (r->proto != 0)
+    {
+      mask->l4.proto = ~0; /* L4 proto needs to be matched */
+      hi->match.l4.proto = r->proto;
+
+      /* Calculate the src/dst port masks and make the src/dst port matches accordingly */
+      make_port_mask (&mask->l4.port[0], r->src_port_or_type_first, r->src_port_or_type_last);
+      hi->match.l4.port[0] = r->src_port_or_type_first & mask->l4.port[0];
+
+      make_port_mask (&mask->l4.port[1], r->dst_port_or_code_first, r->dst_port_or_code_last);
+      hi->match.l4.port[1] = r->dst_port_or_code_first & mask->l4.port[1];
+      /* L4 info must be valid in order to match */
+      mask->pkt.l4_valid = 1;
+      hi->match.pkt.l4_valid = 1;
+      /* And we must set the mask to check that it is an initial fragment */
+      mask->pkt.is_nonfirst_fragment = 1;
+      hi->match.pkt.is_nonfirst_fragment = 0;
+      if ((r->proto == IPPROTO_TCP) && (r->tcp_flags_mask != 0))
+	{
+	  /* if we want to match on TCP flags, they must be masked off as well */
+	  mask->pkt.tcp_flags = r->tcp_flags_mask;
+	  hi->match.pkt.tcp_flags = r->tcp_flags_value;
+	  /* and the flags need to be present within the packet being matched */
+	  mask->pkt.tcp_flags_valid = 1;
+	  hi->match.pkt.tcp_flags_valid = 1;
+	}
+    }
   /* Sanitize the mask and the match */
   u64 *pmask = (u64 *)mask;
   u64 *pmatch = (u64 *)&hi->match;
