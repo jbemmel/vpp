@@ -191,6 +191,14 @@ typedef enum
   ICMP6_ROUTER_SOLICITATION_N_NEXT,
 } icmp6_router_solicitation_or_advertisement_next_t;
 
+/* Router advertisements only use drop and punt; keep the slots contiguous. */
+typedef enum
+{
+  ICMP6_ROUTER_ADVERTISEMENT_NEXT_DROP,
+  ICMP6_ROUTER_ADVERTISEMENT_NEXT_PUNT,
+  ICMP6_ROUTER_ADVERTISEMENT_N_NEXT,
+} icmp6_router_advertisement_next_t;
+
 /*
  * Note: Both periodic RAs and solicited RS come through here.
  */
@@ -701,7 +709,7 @@ icmp6_router_advertisement (vlib_main_t * vm,
 	    ICMP6_ERROR_ROUTER_ADVERTISEMENT_SOURCE_NOT_LINK_LOCAL : error0;
 
 	  /* default is to drop */
-	  next0 = ICMP6_ROUTER_SOLICITATION_NEXT_DROP;
+	  next0 = ICMP6_ROUTER_ADVERTISEMENT_NEXT_DROP;
 
 	  n_advertisements_rcvd++;
 
@@ -985,7 +993,7 @@ icmp6_router_advertisement (vlib_main_t * vm,
 	  if (error0 == ICMP6_ERROR_NONE ||
 	      error0 == ICMP6_ERROR_ROUTER_SOLICITATION_RADV_NOT_CONFIG)
 	    {
-	      next0 = ICMP6_ROUTER_SOLICITATION_NEXT_PUNT;
+	      next0 = ICMP6_ROUTER_ADVERTISEMENT_NEXT_PUNT;
 	      error0 = ICMP6_ERROR_NONE;
 	    }
 
@@ -1019,10 +1027,10 @@ VLIB_REGISTER_NODE (ip6_icmp_router_advertisement_node,static) =
 
   .format_trace = format_icmp6_input_trace,
 
-  .n_next_nodes = ICMP6_ROUTER_SOLICITATION_N_NEXT,
+  .n_next_nodes = ICMP6_ROUTER_ADVERTISEMENT_N_NEXT,
   .next_nodes = {
-    [ICMP6_ROUTER_SOLICITATION_NEXT_DROP] = "ip6-drop",
-    [ICMP6_ROUTER_SOLICITATION_NEXT_PUNT] = "ip6-punt",
+    [ICMP6_ROUTER_ADVERTISEMENT_NEXT_DROP] = "ip6-drop",
+    [ICMP6_ROUTER_ADVERTISEMENT_NEXT_PUNT] = "ip6-punt",
   },
 };
 
