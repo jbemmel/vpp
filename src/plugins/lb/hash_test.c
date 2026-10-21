@@ -26,12 +26,13 @@ lb_hash_test (vlib_main_t *vm, unformat_input_t *input, vlib_cli_command_t *cmd)
     { .lo = 3, .as_index = 3, .weight = 0 },
   };
   CHECK (lb_hash_size (h) == 4);
-  /* Same low 32 bits, different upper fingerprint; all four ways searched. */
+  CHECK (sizeof (lb_hash_bucket_t) == CLIB_CACHE_LINE_BYTES);
+  /* One bucket forces distinct 32-bit fingerprints into all four ways. */
   for (u32 i = 0; i < 4; i++)
-    lb_hash_put (h, ((u64) i << 32) | 7, i + 1, 10, i, 100);
+    lb_hash_put (h, i + 7, i + 1, 10, i, 100);
   for (u32 i = 0; i < 4; i++)
     {
-      lb_hash_get (h, ((u64) i << 32) | 7, 10, 110, &available, &found);
+      lb_hash_get (h, i + 7, 10, 110, &available, &found);
       CHECK (found == i + 1 && available == ~0);
     }
   lb_hash_get (h, 7, 11, 110, &available, &found);

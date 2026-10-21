@@ -41,12 +41,12 @@ lb_hash_words (u64 a, u64 b, u64 c, u64 d, u64 e)
 
 /*
  * @brief One bucket contains 4 entries.
- * Wider fingerprints reduce false flow matches; buckets span two cache lines.
+ * Four arrays of four u32 values fit in one 64-byte cache line.
  */
 typedef struct
 {
   CLIB_CACHE_LINE_ALIGN_MARK (cacheline0);
-  u64 hash[LBHASH_ENTRY_PER_BUCKET];
+  u32 hash[LBHASH_ENTRY_PER_BUCKET];
   u32 timeout[LBHASH_ENTRY_PER_BUCKET];
   u32 vip[LBHASH_ENTRY_PER_BUCKET];
   u32 value[LBHASH_ENTRY_PER_BUCKET];
@@ -97,14 +97,14 @@ lb_hash_free (lb_hash_t *h)
 }
 
 static_always_inline void
-lb_hash_prefetch_bucket (lb_hash_t *ht, u64 hash)
+lb_hash_prefetch_bucket (lb_hash_t *ht, u32 hash)
 {
   lb_hash_bucket_t *bucket = &ht->buckets[hash & ht->buckets_mask];
   CLIB_PREFETCH (bucket, sizeof (*bucket), READ);
 }
 
 static_always_inline void
-lb_hash_get (lb_hash_t *ht, u64 hash, u32 vip, u32 time_now, u32 *available_index, u32 *found_value)
+lb_hash_get (lb_hash_t *ht, u32 hash, u32 vip, u32 time_now, u32 *available_index, u32 *found_value)
 {
   lb_hash_bucket_t *bucket = &ht->buckets[hash & ht->buckets_mask];
   *found_value = 0;
@@ -127,13 +127,13 @@ lb_hash_get (lb_hash_t *ht, u64 hash, u32 vip, u32 time_now, u32 *available_inde
 }
 
 static_always_inline u32
-lb_hash_available_value (lb_hash_t *h, u64 hash, u32 available_index)
+lb_hash_available_value (lb_hash_t *h, u32 hash, u32 available_index)
 {
   return h->buckets[hash & h->buckets_mask].value[available_index];
 }
 
 static_always_inline void
-lb_hash_put (lb_hash_t *h, u64 hash, u32 value, u32 vip, u32 available_index, u32 time_now)
+lb_hash_put (lb_hash_t *h, u32 hash, u32 value, u32 vip, u32 available_index, u32 time_now)
 {
   lb_hash_bucket_t *bucket = &h->buckets[hash & h->buckets_mask];
   bucket->hash[available_index] = hash;

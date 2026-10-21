@@ -164,7 +164,7 @@ lb_node_get_other_ports6 (ip6_header_t *ip60)
 }
 
 static_always_inline void
-lb_node_get_hash (lb_main_t *lbm, vlib_buffer_t *p, u8 is_input_v4, u64 *hash, u32 *vip_idx,
+lb_node_get_hash (lb_main_t *lbm, vlib_buffer_t *p, u8 is_input_v4, u32 *hash, u32 *vip_idx,
 		  u8 per_port_vip)
 {
   vip_port_key_t key;
@@ -282,7 +282,7 @@ lb_node_fn (vlib_main_t * vm,
   n_left_from = frame->n_vectors;
   next_index = node->cached_next_index;
 
-  u64 nexthash0 = 0;
+  u32 nexthash0 = 0;
   u32 next_vip_idx0 = ~0;
   if (PREDICT_TRUE(n_left_from > 0))
     {
@@ -303,7 +303,7 @@ lb_node_fn (vlib_main_t * vm,
           u16 len0;
           u32 available_index0;
           u8 counter = 0;
-          u64 hash0 = nexthash0;
+          u32 hash0 = nexthash0;
           u32 vip_index0 = next_vip_idx0;
           u32 next0;
 

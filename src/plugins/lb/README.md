@@ -71,19 +71,21 @@ address, preserving its existing affinity scope. Other protocols currently use
 zero port words; packet parsing of IPv4 options, fragments, and IPv6 extension
 headers is not extended by this change.
 
-Sticky entries match a 64-bit fingerprint and VIP index. This greatly reduces
-accidental aliasing compared with 32-bit fingerprints, but is not full tuple
-verification or a cryptographic defense. Every one of the four ways in a bucket
+Sticky entries match a 32-bit fingerprint and VIP index. The packet path uses
+the low 32 bits of the ordered 64-bit mixer; backend permutation construction
+continues to use the mixer directly. Fingerprint matching is not full tuple
+verification: two flows with the same fingerprint and VIP share an assignment. Every one of the four ways in a bucket
 is searched. A deadline equal to the current time is expired; signed modular
 subtraction handles timer wrap for timeouts below 2^31 ticks. Successful lookups
 refresh the deadline. Configuration rejects timeouts of 2^31 ticks or more.
 Capacity reporting counts all four ways per bucket.
 
-A bucket occupies two 64-byte cache lines on platforms with 64-byte cache lines,
-compared with one for the previous 32-bit layout. Lookup uses one portable scalar
+A bucket retains the original 64-byte payload: four 32-bit fingerprints, four
+deadlines, four VIP indexes, and four backend indexes. With 64-byte cache lines,
+each aligned bucket occupies one cache line. Lookup uses one portable scalar
 implementation so match and expiry semantics do not depend on SIMD availability.
-The additional hashing and cache footprint require throughput benchmarking for
-the target deployment; no packet-rate performance claim is made here.
+Hashing throughput still requires benchmarking on the target deployment; no
+packet-rate performance claim is made here.
 
 Weight zero is a graceful drain: existing cached assignments continue until
 expiry. A flush removes those assignments and expires their slots for immediate
@@ -132,7 +134,8 @@ The regression command exercises exact quotas, common-factor weight scaling,
 zero weights, tiny tables, insertion-order and pool-index independence,
 removal/addition movement, small weight changes, all four sticky-cache ways, VIP
 isolation,
-64-bit fingerprint distinctions, capacity, deadline equality, and timer wrap.
+32-bit fingerprint distinctions, single-cache-line bucket size, capacity,
+deadline equality, and timer wrap.
 The Python LB suite invokes this command and verifies weighted API bucket counts,
 draining, and packet forwarding:
 
