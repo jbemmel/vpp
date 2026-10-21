@@ -236,6 +236,12 @@ class TestLB(VppTestCase):
         )  # LB_DEFAULT_PER_CPU_STICKY_BUCKETS
         self.assertEqual(reply.flow_timeout, 40)  # LB_DEFAULT_FLOW_TIMEOUT
 
+    def test_lb_hashing(self):
+        """Deterministic table construction and sticky fingerprint regressions"""
+        result = self.vapi.cli("test lb hashing")
+        self.logger.info(result)
+        self.assertIn("LB hashing tests passed", result)
+
     def test_lb_as_set_weight(self):
         """Load Balancer lb_as_set_weight via binary API"""
         vip = "192.0.2.0/24"
@@ -256,21 +262,21 @@ class TestLB(VppTestCase):
             )
             v2 = {str(d.app_srv): d for d in self.vapi.lb_as_v2_dump()}
             self.assertEqual(v2["10.0.0.1"].weight, 50)
-            self.assertEqual(v2["10.0.0.1"].num_buckets, 150)
+            self.assertEqual(v2["10.0.0.1"].num_buckets, 146)
             self.assertEqual(v2["10.0.0.2"].weight, 100)
-            self.assertEqual(v2["10.0.0.2"].num_buckets, 292)
-            self.assertEqual(v2["10.0.0.3"].num_buckets, 291)
-            self.assertEqual(v2["10.0.0.4"].num_buckets, 291)
+            self.assertEqual(v2["10.0.0.2"].num_buckets, 293)
+            self.assertEqual(v2["10.0.0.3"].num_buckets, 293)
+            self.assertEqual(v2["10.0.0.4"].num_buckets, 292)
 
             self.vapi.lb_as_set_weight(
                 pfx=vip, protocol=255, port=0, as_address="10.0.0.2", weight=0
             )
             v2 = {str(d.app_srv): d for d in self.vapi.lb_as_v2_dump()}
-            self.assertEqual(v2["10.0.0.1"].num_buckets, 208)
+            self.assertEqual(v2["10.0.0.1"].num_buckets, 205)
             self.assertEqual(v2["10.0.0.2"].weight, 0)
             self.assertEqual(v2["10.0.0.2"].num_buckets, 0)
-            self.assertEqual(v2["10.0.0.3"].num_buckets, 408)
-            self.assertEqual(v2["10.0.0.4"].num_buckets, 408)
+            self.assertEqual(v2["10.0.0.3"].num_buckets, 410)
+            self.assertEqual(v2["10.0.0.4"].num_buckets, 409)
 
             # Add a new AS directly at weight 0 (no traffic until ramped up)
             self.vapi.lb_add_del_as_v2(
@@ -279,9 +285,9 @@ class TestLB(VppTestCase):
             v2 = {str(d.app_srv): d for d in self.vapi.lb_as_v2_dump()}
             self.assertEqual(v2["10.0.0.5"].weight, 0)
             self.assertEqual(v2["10.0.0.5"].num_buckets, 0)
-            self.assertEqual(v2["10.0.0.1"].num_buckets, 208)
-            self.assertEqual(v2["10.0.0.3"].num_buckets, 408)
-            self.assertEqual(v2["10.0.0.4"].num_buckets, 408)
+            self.assertEqual(v2["10.0.0.1"].num_buckets, 205)
+            self.assertEqual(v2["10.0.0.3"].num_buckets, 410)
+            self.assertEqual(v2["10.0.0.4"].num_buckets, 409)
 
             # Ramp it up to 50 — it should now take a proportional share
             self.vapi.lb_as_set_weight(

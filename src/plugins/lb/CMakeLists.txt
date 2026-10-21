@@ -18,6 +18,7 @@ add_vpp_plugin(lb
   lb.c
   node.c
   util.c
+  hash_test.c
 
   API_FILES
   lb.api
@@ -27,6 +28,7 @@ add_vpp_plugin(lb
   lb.h
   util.h
   lbhash.h
+  maglev.h
 
   API_TEST_SOURCES
   lb_test.c

@@ -4,6 +4,7 @@
  */
 
 #include <lb/lb.h>
+#include <lb/maglev.h>
 #include <vnet/plugin/plugin.h>
 #include <vpp/app/version.h>
 #include <vnet/api_errno.h>
@@ -21,8 +22,21 @@ static fib_source_t lb_fib_src;
 
 lb_main_t lb_main;
 
-#define lb_get_writer_lock() clib_spinlock_lock (&lb_main.writer_lock)
-#define lb_put_writer_lock() clib_spinlock_unlock (&lb_main.writer_lock)
+/* All configuration writers run on the main thread. Stop packet readers
+ * before resizing pools, publishing tables, or touching per-worker caches. */
+static void
+lb_get_writer_lock (void)
+{
+  vlib_worker_thread_barrier_sync (vlib_get_main ());
+  clib_spinlock_lock (&lb_main.writer_lock);
+}
+
+static void
+lb_put_writer_lock (void)
+{
+  clib_spinlock_unlock (&lb_main.writer_lock);
+  vlib_worker_thread_barrier_release (vlib_get_main ());
+}
 
 static void lb_as_stack (lb_as_t *as);
 
@@ -259,31 +273,6 @@ u8 *format_lb_vip_detailed (u8 * s, va_list * args)
   return s;
 }
 
-typedef struct {
-  u32 as_index;
-  u32 replica; /* 0..weight-1 — distinguishes copies of the same AS */
-  u32 last;
-  u32 skip;
-} lb_pseudorand_t;
-
-static int lb_pseudorand_compare(void *a, void *b)
-{
-  lb_pseudorand_t *pra = (lb_pseudorand_t *) a;
-  lb_pseudorand_t *prb = (lb_pseudorand_t *) b;
-  lb_main_t *lbm = &lb_main;
-  lb_as_t *asa = &lbm->ass[pra->as_index];
-  lb_as_t *asb = &lbm->ass[prb->as_index];
-
-  /* Sorting by (replica, address) accomplishes two goals:
-   * 1) interleave all ASes at the same replica index so that the remainder buckets
-   *    (M mod total_weight) are spread evenly across ASes
-   * 2) guarantee a stable mapping across Maglev instances that have added the same
-   *    backend+weights, but in a different order. */
-  if (pra->replica != prb->replica)
-  return (int) pra->replica - (int) prb->replica;
-  return memcmp(&asa->address, &asb->address, sizeof(asb->address));
-}
-
 static void lb_vip_garbage_collection(lb_vip_t *vip)
 {
   lb_main_t *lbm = &lb_main;
@@ -378,105 +367,48 @@ void lb_garbage_collection()
   lb_put_writer_lock();
 }
 
-static void lb_vip_update_new_flow_table(lb_vip_t *vip)
+static void
+lb_vip_update_new_flow_table (lb_vip_t *vip)
 {
   lb_main_t *lbm = &lb_main;
-  lb_new_flow_entry_t *old_table;
-  u32 i, *as_index;
-  lb_new_flow_entry_t *new_flow_table = 0;
-  lb_as_t *as;
-  lb_pseudorand_t *pr, *sort_arr = 0;
+  lb_maglev_backend_t *backends = 0;
+  u32 *index;
+  u32 size = vip->new_flow_table_mask + 1;
+  u32 *table = 0;
+  lb_new_flow_entry_t *entries = 0, *old = vip->new_flow_table;
 
-  CLIB_SPINLOCK_ASSERT_LOCKED (&lbm->writer_lock); // We must have the lock
-
-  // Check if some AS is configured with a non-zero weight
-  i = 0;
-  pool_foreach (as_index, vip->as_indexes) {
-      as = &lbm->ass[*as_index];
-      if ((as->flags & LB_AS_FLAGS_USED) && as->weight > 0)
-      {
-	i = 1;
-	goto out; // Not sure 'break' works in this macro-loop
-      }
-  }
-
-out:
-  if (i == 0) {
-      // Only the default. i.e. no AS (or all weights are 0)
-      vec_validate (new_flow_table, vip->new_flow_table_mask);
-      for (i = 0; i < vec_len (new_flow_table); i++)
-      new_flow_table[i].as_index = 0;
-
-    goto finished;
-  }
-
-  /* Build sort_arr expanded by weight: each AS appears weight times,
-   * once per replica index. This gives proportional bucket allocation. */
-  pool_foreach (as_index, vip->as_indexes) {
-      as = &lbm->ass[*as_index];
-      if (!(as->flags & LB_AS_FLAGS_USED) || as->weight == 0)
-      continue;
-      for (u32 r = 0; r < as->weight; r++)
-      {
-	lb_pseudorand_t e = { .as_index = as - lbm->ass, .replica = r };
-	vec_add1 (sort_arr, e);
-      }
-  }
-
-  vec_sort_with_function(sort_arr, lb_pseudorand_compare);
-
-  //Now let's pseudo-randomly generate permutations
-  vec_foreach(pr, sort_arr) {
-    lb_as_t *as = &lbm->ass[pr->as_index];
-
-    /* Mix replica into the seed so each copy of the same AS gets an
-     * independent permutation. skip must be odd (prime with 2^n). */
-    u64 seed = clib_xxhash (as->address.as_u64[0] ^ as->address.as_u64[1] ^ (u64) pr->replica);
-    /* We have 2^n buckets.
-     * skip must be prime with 2^n.
-     * So skip must be odd.
-     * MagLev actually state that M should be prime,
-     * but this has a big computation cost (% operation).
-     * Using 2^n is more better (& operation).
-     */
-    pr->skip = ((seed & 0xffffffff) | 1) & vip->new_flow_table_mask;
-    pr->last = (seed >> 32) & vip->new_flow_table_mask;
-  }
-
-  //Let's create a new flow table
-  vec_validate(new_flow_table, vip->new_flow_table_mask);
-  for (i=0; i<vec_len(new_flow_table); i++)
-    new_flow_table[i].as_index = 0;
-
-  u32 done = 0;
-  while (1) {
-    vec_foreach(pr, sort_arr) {
-      while (1) {
-        u32 last = pr->last;
-        pr->last = (pr->last + pr->skip) & vip->new_flow_table_mask;
-        if (new_flow_table[last].as_index == 0) {
-          new_flow_table[last].as_index = pr->as_index;
-          break;
-        }
-      }
-      done++;
-      if (done == vec_len(new_flow_table))
-        goto finished;
+  CLIB_SPINLOCK_ASSERT_LOCKED (&lbm->writer_lock);
+  pool_foreach (index, vip->as_indexes)
+    {
+      lb_as_t *as = &lbm->ass[*index];
+      if (!(as->flags & LB_AS_FLAGS_USED) || !as->weight)
+        continue;
+      lb_maglev_backend_t b = {
+        .hi = clib_net_to_host_u64 (as->address.as_u64[0]),
+        .lo = clib_net_to_host_u64 (as->address.as_u64[1]),
+        .as_index = *index,
+        .weight = as->weight,
+      };
+      vec_add1 (backends, b);
     }
-  }
-
-finished:
-  vec_free(sort_arr);
-
-  old_table = vip->new_flow_table;
-  vip->new_flow_table = new_flow_table;
-  vec_free(old_table);
+  vec_validate (table, size - 1);
+  lb_maglev_build (backends, vec_len (backends), table, size);
+  vec_validate (entries, size - 1);
+  for (u32 i = 0; i < size; i++)
+    entries[i].as_index = table[i];
+  vip->new_flow_table = entries;
+  vec_free (old);
+  vec_free (table);
+  vec_free (backends);
 }
 
 int lb_conf(ip4_address_t *ip4_address, ip6_address_t *ip6_address,
            u32 per_cpu_sticky_buckets, u32 flow_timeout)
 {
   lb_main_t *lbm = &lb_main;
+
+  if (flow_timeout >= 0x80000000U)
+    return VNET_API_ERROR_INVALID_VALUE;
 
   if (!is_pow2(per_cpu_sticky_buckets))
     return VNET_API_ERROR_INVALID_MEMORY_SIZE;
@@ -771,6 +703,9 @@ lb_flush_vip_as (u32 vip_index, u32 as_index)
   clib_thread_index_t thread_index;
   vlib_thread_main_t *tm = vlib_get_thread_main();
   lb_main_t *lbm = &lb_main;
+  u32 now = lb_hash_time_now (vlib_get_main ());
+
+  vlib_worker_thread_barrier_sync (vlib_get_main ());
 
   for(thread_index = 0; thread_index < tm->n_vlib_mains; thread_index++ ) {
     lb_hash_t *h = lbm->per_cpu[thread_index].sticky_ht;
@@ -787,6 +722,7 @@ lb_flush_vip_as (u32 vip_index, u32 as_index)
               vlib_refcount_add(&lbm->as_refcount, thread_index, 0, 1);
               b->vip[i] = ~0;
               b->value[i] = 0;
+              b->timeout[i] = now;
             }
         }
         if (vip_index == ~0)
@@ -796,6 +732,8 @@ lb_flush_vip_as (u32 vip_index, u32 as_index)
           }
       }
     }
+
+  vlib_worker_thread_barrier_release (vlib_get_main ());
 
   return 0;
 }

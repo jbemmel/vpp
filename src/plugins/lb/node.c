@@ -164,8 +164,8 @@ lb_node_get_other_ports6 (ip6_header_t *ip60)
 }
 
 static_always_inline void
-lb_node_get_hash (lb_main_t *lbm, vlib_buffer_t *p, u8 is_input_v4, u32 *hash,
-		  u32 *vip_idx, u8 per_port_vip)
+lb_node_get_hash (lb_main_t *lbm, vlib_buffer_t *p, u8 is_input_v4, u64 *hash, u32 *vip_idx,
+		  u8 per_port_vip)
 {
   vip_port_key_t key;
   clib_bihash_kv_8_8_t kv, value;
@@ -181,32 +181,28 @@ lb_node_get_hash (lb_main_t *lbm, vlib_buffer_t *p, u8 is_input_v4, u32 *hash,
   if (is_input_v4)
     {
       ip40 = vlib_buffer_get_current (p);
-      if (PREDICT_TRUE(
-          ip40->protocol == IP_PROTOCOL_TCP
-              || ip40->protocol == IP_PROTOCOL_UDP))
-        ports = ((u64) ((udp_header_t *) (ip40 + 1))->src_port << 16)
-            | ((u64) ((udp_header_t *) (ip40 + 1))->dst_port);
+      if (PREDICT_TRUE (ip40->protocol == IP_PROTOCOL_TCP || ip40->protocol == IP_PROTOCOL_UDP))
+	ports = ((u64) clib_net_to_host_u16 (((udp_header_t *) (ip40 + 1))->src_port) << 16) |
+		((u64) clib_net_to_host_u16 (((udp_header_t *) (ip40 + 1))->dst_port));
       else
-        ports = lb_node_get_other_ports4 (ip40);
+	ports = lb_node_get_other_ports4 (ip40);
     }
   else
     {
       ip60 = vlib_buffer_get_current (p);
 
-      if (PREDICT_TRUE(
-          ip60->protocol == IP_PROTOCOL_TCP
-              || ip60->protocol == IP_PROTOCOL_UDP))
-        ports = ((u64) ((udp_header_t *) (ip60 + 1))->src_port << 16)
-            | ((u64) ((udp_header_t *) (ip60 + 1))->dst_port);
+      if (PREDICT_TRUE (ip60->protocol == IP_PROTOCOL_TCP || ip60->protocol == IP_PROTOCOL_UDP))
+	ports = ((u64) clib_net_to_host_u16 (((udp_header_t *) (ip60 + 1))->src_port) << 16) |
+		((u64) clib_net_to_host_u16 (((udp_header_t *) (ip60 + 1))->dst_port));
       else
-        ports = lb_node_get_other_ports6 (ip60);
+	ports = lb_node_get_other_ports6 (ip60);
     }
 
   if (per_port_vip)
     {
       /* For per-port-vip case, ip lookup stores placeholder index */
       key.vip_prefix_index = *vip_idx;
-      key.port = (u16) (ports & 0xFFFF);
+      key.port = clib_host_to_net_u16 ((u16) ports);
       key.rsv = 0;
       if (is_input_v4)
 	{
@@ -236,27 +232,33 @@ lb_node_get_hash (lb_main_t *lbm, vlib_buffer_t *p, u8 is_input_v4, u32 *hash,
     {
       if (lb_vip_is_src_ip_sticky (vip0))
 	{
-	  *hash = lb_hash_hash (*((u64 *) &ip40->address_pair), 0, 0, 0, 0);
+	  *hash = lb_hash_words (((u64) clib_net_to_host_u32 (ip40->src_address.as_u32) << 32 |
+				  clib_net_to_host_u32 (ip40->dst_address.as_u32)),
+				 0, 0, 0, 0);
 	}
       else
 	{
-	  *hash =
-	    lb_hash_hash (*((u64 *) &ip40->address_pair), ports, 0, 0, 0);
+	  *hash = lb_hash_words (((u64) clib_net_to_host_u32 (ip40->src_address.as_u32) << 32 |
+				  clib_net_to_host_u32 (ip40->dst_address.as_u32)),
+				 ports, ip40->protocol, 0, 0);
 	}
     }
   else
     {
       if (lb_vip_is_src_ip_sticky (vip0))
 	{
-	  *hash = lb_hash_hash (
-	    ip60->src_address.as_u64[0], ip60->src_address.as_u64[1],
-	    ip60->dst_address.as_u64[0], ip60->dst_address.as_u64[1], 0);
+	  *hash = lb_hash_words (clib_net_to_host_u64 (ip60->src_address.as_u64[0]),
+				 clib_net_to_host_u64 (ip60->src_address.as_u64[1]),
+				 clib_net_to_host_u64 (ip60->dst_address.as_u64[0]),
+				 clib_net_to_host_u64 (ip60->dst_address.as_u64[1]), 0);
 	}
       else
 	{
-	  *hash = lb_hash_hash (
-	    ip60->src_address.as_u64[0], ip60->src_address.as_u64[1],
-	    ip60->dst_address.as_u64[0], ip60->dst_address.as_u64[1], ports);
+	  *hash = lb_hash_words (clib_net_to_host_u64 (ip60->src_address.as_u64[0]),
+				 clib_net_to_host_u64 (ip60->src_address.as_u64[1]),
+				 clib_net_to_host_u64 (ip60->dst_address.as_u64[0]),
+				 clib_net_to_host_u64 (ip60->dst_address.as_u64[1]),
+				 ports | ((u64) ip60->protocol << 32));
 	}
     }
 }
@@ -280,7 +282,7 @@ lb_node_fn (vlib_main_t * vm,
   n_left_from = frame->n_vectors;
   next_index = node->cached_next_index;
 
-  u32 nexthash0 = 0;
+  u64 nexthash0 = 0;
   u32 next_vip_idx0 = ~0;
   if (PREDICT_TRUE(n_left_from > 0))
     {
@@ -301,7 +303,7 @@ lb_node_fn (vlib_main_t * vm,
           u16 len0;
           u32 available_index0;
           u8 counter = 0;
-          u32 hash0 = nexthash0;
+          u64 hash0 = nexthash0;
           u32 vip_index0 = next_vip_idx0;
           u32 next0;
 
